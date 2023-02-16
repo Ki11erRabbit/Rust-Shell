@@ -1,6 +1,6 @@
 use std::process;
 use std::env;
-use std::io;
+use std::io::{self,Write};
 
 const PROMPT: &str = "tsh> ";
 static mut VERBOSE:i32 = 0;
@@ -8,22 +8,25 @@ static mut VERBOSE:i32 = 0;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut emit_prompt = 1;
-
-    for c in 0..args[0].len() {
-        match args[0].get(0..0).unwrap() {
-            "-" => continue,
-            "h" => usage(),
-            "v" => unsafe { VERBOSE = 1},
-            "p" => emit_prompt = 0,
-            _ => usage(),
+    
+    if args.len() > 1 { 
+        for c in 0..args[1].len() {
+            match args[1].get(0..0).unwrap() {
+                "-" => continue,
+                "h" => usage(),
+                "v" => unsafe { VERBOSE = 1},
+                "p" => emit_prompt = 0,
+                _ => usage(),
+            }
         }
     }
     
 
     loop {
         let mut buffer = String::new();
-        if emit_prompt == 0 {
-            println!("{}",PROMPT);
+        if emit_prompt == 1 {
+            print!("{}",PROMPT);
+            io::stdout().flush().unwrap();
         }
         io::stdin().read_line(&mut buffer)
             .expect("Failed to read line");
@@ -38,17 +41,22 @@ fn main() {
 
 
 fn eval(cmdline: String) {
+    println!("Eval");
     let argv: Vec<String>;
     let bg: i32;
     let pair = parseline(cmdline);
     bg = pair.0;
     argv = pair.1;
-
+    
     println!("{:?}",argv);
 
+    if builtin_cmd(argv) == 1 {
+        return;
+    }
 }
 
 fn parseline(cmdline: String) -> (i32,Vec<String>) {
+    println!("Parseline");
     let mut argv: Vec<String> = Vec::new();
     let bg: i32;
     let mut array = cmdline.clone(); 
@@ -62,25 +70,30 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
         bg = 0;
     }
 
-
     while array.len() != 0 {
-        match array.get(0..0).unwrap() {
+        //println!("{}",array);
+        //println!("array len: {}", array.len());
+        match array.get(..1).unwrap() {
             "'" => {
-                        let mut temp: String = array.drain(..0).collect();
-                        let temp2: String = array.drain(0..array.find("'").unwrap()).collect();
+                        let mut temp: String = array.drain(..1).collect();
+                        //println!("{}!", array);
+                        let temp2: String = array.drain(..array.find('\'').unwrap()+1).collect();
                         temp += &temp2;
 
                         argv.push(temp);
                    },
             " " => {
-                        array.drain(..0);
+                        //println!("Space");
+                        array.drain(..1);
                    },
             _ => {
+                        //println!("Default");
                         argv.push(array.drain(0..array.find(' ').unwrap()).collect());
 
-                 }
-            
+                 } 
         }
+
+        //println!("{:?}",argv);
 
     }
 
@@ -89,17 +102,21 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
 }
 
 fn parseargs(argv: Vec<&str>) -> (Vec<&str>,Vec<i32>,Vec<i32>) {
- 
+     
     return (vec!["temp"],vec![1],vec![1]);
 }
 
-fn builtin_cmd(argv: Vec<&str>) -> i32 {
-    if argv[0] == "quit" {
+fn builtin_cmd(argv: Vec<String>) -> i32 {
+    if argv.len() == 0 {
+        return 1;
+    }
+    else if argv[0].as_str() == "quit" {
         process::exit(0);
     }
-    else if argv[0] == "exit" {
+    else if argv[0].as_str() == "exit" {
         process::exit(0);
     }
+    
     return 0;
 
 }
