@@ -38,7 +38,14 @@ fn main() {
 
 
 fn eval(cmdline: String) {
-    
+    let argv: Vec<String>;
+    let bg: i32;
+    let pair = parseline(cmdline);
+    bg = pair.0;
+    argv = pair.1;
+
+    println!("{:?}",argv);
+
 }
 
 fn parseline(cmdline: String) -> (i32,Vec<String>) {
