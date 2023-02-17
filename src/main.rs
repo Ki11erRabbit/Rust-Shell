@@ -2,6 +2,7 @@ use std::process::{self,Command, Stdio, Child};
 use std::env;
 use std::io::{self,Write};
 use std::fs::File;
+use std::os::unix::process::CommandExt;
 
 const PROMPT: &str = "tsh> ";
 static mut VERBOSE:i32 = 0;
@@ -79,11 +80,15 @@ fn eval(cmdline: String) {
         println!("{:?}",args);
         println!("{:?}",stdin_redir);
         println!("{:?}",stdout_redir);
+        
+        println!("\npid = {}", process::id());
     }
-
+    
     let mut processes: Vec<Child> = Vec::new(); 
+    let mut group_id = 0;
     for i in 0..cmds.len() {
         let mut command: &mut Command = &mut Command::new(cmds[i].as_str());
+        command = command.process_group(group_id);
         //println!("{}",cmds[i].len());
         command = command.args(args[i].as_slice());
         if stdout_redir[i] == usize::MAX {
@@ -99,12 +104,19 @@ fn eval(cmdline: String) {
         else if stdin_redir[i] != usize::MAX && stdin_redir[i] != usize::MAX -1{
             let file = File::open(argv[stdin_redir[i]].as_str()).expect("Bad file path");
             command = command.stdin(file);
-        }
-
+        } 
         
+
         match command.spawn() {
             Ok(x) => processes.push(x),
-            Err(_) => eprintln!("tsh: command not found: {}", cmds[i])
+            Err(y) => eprintln!("tsh: command not found: {} {}", cmds[i],y)
+        }
+        if unsafe { VERBOSE == 1 } {
+            
+            println!("pid child = {}", processes[i].id());
+        }
+        if i == 0 {
+            group_id = processes[i].id().try_into().unwrap();
         }
     }
 
