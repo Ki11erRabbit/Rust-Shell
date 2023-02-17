@@ -1,7 +1,6 @@
 use std::process::{self,Command, Stdio, Child};
 use std::env;
 use std::io::{self,Write};
-use std::rc::Rc;
 
 const PROMPT: &str = "tsh> ";
 static mut VERBOSE:i32 = 0;
@@ -12,7 +11,7 @@ fn main() {
     
     if args.len() > 1 { 
         for c in 0..args[1].len() {
-            match args[1].get(0..0).unwrap() {
+            match args[c].get(0..0).unwrap() {
                 "-" => continue,
                 "h" => usage(),
                 "v" => unsafe { VERBOSE = 1},
@@ -44,9 +43,9 @@ fn main() {
 fn eval(cmdline: String) {
     //println!("Eval");
     let argv: Vec<String>;
-    let bg: i32;
+    let _bg: i32;
     let pair = parseline(cmdline);
-    bg = pair.0;
+    _bg = pair.0;
     argv = pair.1;
     
     //println!("{:?}",argv);
@@ -62,33 +61,34 @@ fn eval(cmdline: String) {
     let stdin_redir = set.2;
     let stdout_redir = set.3;
 
-    println!("{:?}",cmds);
+    /*println!("{:?}",cmds);
     println!("{:?}",stdin_redir);
-    println!("{:?}",stdout_redir);
+    println!("{:?}",stdout_redir);*/
 
-    //let mut commands: Vec<Command> = Vec::new(); 
     let mut processes: Vec<Child> = Vec::new(); 
     for i in 0..cmds.len() {
         let mut command: &mut Command = &mut Command::new(cmds[i].as_str());
-        //commands.push(Command::new(cmds[i][0].as_str()));
-        println!("{}",cmds[i].len());
+        //println!("{}",cmds[i].len());
         command = command.args(args[i].as_slice());
         if stdout_redir[i] == 0 {
-            //commands[i].stdout(Stdio::piped());
             command = command.stdout(Stdio::piped());
         }
         if stdin_redir[i] == 0 {
-            //commands[i].stdin(Stdio::from(processes[i - 1].stdout.as_ref().unwrap()));
             command = command.stdin(processes[i-1].stdout.take().unwrap());
         }
 
         
-        //processes.push(&commands[i].spawn().unwrap());
-        processes.push(command.spawn().unwrap());
+        match command.spawn() {
+            Ok(x) => processes.push(x),
+            Err(_) => eprintln!("tsh: command not found: {}", cmds[i])
+        }
     }
 
     for i in 0..processes.len() {
-        processes[i].wait();
+        match processes[i].wait() {
+            Ok(_status) => (),
+            Err(error) => eprintln!("{}", error)
+        }
     }
 
 }
@@ -174,10 +174,10 @@ fn parseargs(argv: Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<
                     curr_cmd += 1;
                 },
             "<" => {
-                    stdin_redir[curr_cmd] = cmds[curr_cmd].len();
+                    stdin_redir[curr_cmd] = args[curr_cmd].len();
                 },
             ">" => {
-                    stdout_redir[curr_cmd] = cmds[curr_cmd].len();
+                    stdout_redir[curr_cmd] = args[curr_cmd].len();
                 },
             _ => {
                     if cmds[curr_cmd].as_str() == "" {
