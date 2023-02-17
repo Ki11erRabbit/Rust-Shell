@@ -1,6 +1,7 @@
 use std::process::{self,Command, Stdio, Child};
 use std::env;
 use std::io::{self,Write};
+use std::fs::File;
 
 const PROMPT: &str = "tsh> ";
 static mut VERBOSE:i32 = 0;
@@ -66,7 +67,7 @@ fn eval(cmdline: String) {
         return;
     }
 
-    let set = parseargs(argv);
+    let set = parseargs(&argv);
 
     let cmds = set.0;
     let args = set.1;
@@ -75,6 +76,7 @@ fn eval(cmdline: String) {
 
     if unsafe { VERBOSE == 1 } {
         println!("{:?}",cmds);
+        println!("{:?}",args);
         println!("{:?}",stdin_redir);
         println!("{:?}",stdout_redir);
     }
@@ -84,11 +86,19 @@ fn eval(cmdline: String) {
         let mut command: &mut Command = &mut Command::new(cmds[i].as_str());
         //println!("{}",cmds[i].len());
         command = command.args(args[i].as_slice());
-        if stdout_redir[i] == 0 {
+        if stdout_redir[i] == usize::MAX {
             command = command.stdout(Stdio::piped());
         }
-        if stdin_redir[i] == 0 {
+        else if stdout_redir[i] != usize::MAX && stdout_redir[i] != usize::MAX -1{
+            let file = File::create(argv[stdout_redir[i]].as_str()).expect("Bad file path");
+            command = command.stdout(file);
+        }
+        if stdin_redir[i] == usize::MAX {
             command = command.stdin(processes[i-1].stdout.take().unwrap());
+        }
+        else if stdin_redir[i] != usize::MAX && stdin_redir[i] != usize::MAX -1{
+            let file = File::open(argv[stdin_redir[i]].as_str()).expect("Bad file path");
+            command = command.stdin(file);
         }
 
         
@@ -167,7 +177,7 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
     return (bg,argv);
 }
 
-fn parseargs(argv: Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
+fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
     if unsafe { VERBOSE == 1 } {
         println!("parseargs");
     }
@@ -179,26 +189,35 @@ fn parseargs(argv: Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<
     let mut curr_cmd = 0;
     cmds.push("".to_string());
     args.push(Vec::new());
-    stdin_redir.push(usize::MAX);
-    stdout_redir.push(usize::MAX);
+    stdin_redir.push(usize::MAX -1);
+    stdout_redir.push(usize::MAX -1);
 
+    let mut skip = false;
     for i in 0..argv.len() {
         match argv[i].as_str() {
             "|" => {
-                    stdout_redir[curr_cmd] = 0;
-                    stdin_redir.push(0);
-                    stdout_redir.push(usize::MAX);
+                    stdout_redir[curr_cmd] = usize::MAX;
+                    stdin_redir.push(usize::MAX);
+                    stdout_redir.push(usize::MAX-1);
                     cmds.push("".to_string());
                     args.push(Vec::new());
                     curr_cmd += 1;
                 },
             "<" => {
-                    stdin_redir[curr_cmd] = args[curr_cmd].len();
+                    //stdin_redir[curr_cmd] = args[curr_cmd].len();
+                    stdin_redir[curr_cmd] = i + 1;
+                    skip = true;
                 },
             ">" => {
-                    stdout_redir[curr_cmd] = args[curr_cmd].len();
+                    //stdout_redir[curr_cmd] = args[curr_cmd].len();
+                    stdout_redir[curr_cmd] = i + 1;
+                    skip = true;
                 },
             _ => {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
                     if cmds[curr_cmd].as_str() == "" {
                         cmds[curr_cmd] = argv[i].as_str().to_string();
                     }
