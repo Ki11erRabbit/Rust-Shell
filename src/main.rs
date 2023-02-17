@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use std::fmt;
 use signal_hook::{consts::*, iterator::Signals};
 use std::{thread, time};
+use nix::unistd::Pid;
+use nix::sys::signal::{self, Signal};
 
 pub enum ProccessState {
     UNDEF,
@@ -27,8 +29,8 @@ impl fmt::Display for ProccessState {
 }
 
 pub struct Job {
-    pid: u32,
-    pgid: u32,
+    pid: i32,
+    pgid: i32,
     jid: u32,
     state: ProccessState,
     cmdline: String,
@@ -37,7 +39,7 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new(pid: u32, pgid: u32, jid: u32, state: ProccessState, cmdline: String, pipeline: Mutex<Vec<Child>>) -> Self {
+    pub fn new(pid: i32, pgid: i32, jid: u32, state: ProccessState, cmdline: String, pipeline: Mutex<Vec<Child>>) -> Self {
         Self {pid: pid, pgid: pgid, jid: jid, state: state, cmdline: cmdline, pipeline: pipeline}
     }
 }
@@ -71,12 +73,12 @@ impl Jobs {
         Self {jobs: Vec::new(),next_jid: 1}
     }
 
-    pub fn addjob(&mut self, pid: u32, pgid: u32, state: ProccessState, cmdline: String, pipeline: Mutex<Vec<Child>>) {
+    pub fn addjob(&mut self, pid: i32, pgid: i32, state: ProccessState, cmdline: String, pipeline: Mutex<Vec<Child>>) {
        self.jobs.push(Job::new(pid,pgid,self.next_jid,state,cmdline,pipeline)); 
        self.next_jid += 1;
     }
 
-    pub fn delete_job(&mut self,pid: u32) -> Result<&str,&str> {
+    pub fn delete_job(&mut self,pid: i32) -> Result<&str,&str> {
         if pid < 1 {
             return Err("Invalid PID");
         }
@@ -101,7 +103,7 @@ impl Jobs {
         self.next_jid = max + 1;
     }
 
-    pub fn get_job_pid(&self, pid: u32) -> Option<&Job> {
+    pub fn get_job_pid(&self, pid: i32) -> Option<&Job> {
         for job in self.jobs.iter() {
             if job.pid == pid {
 
@@ -181,23 +183,8 @@ fn main() {
                     
                     match job.state {
                         ProccessState::FG => {
-
-                                for cmd in job.pipeline.lock().unwrap().iter_mut() {
-
-                                    let mut kill = Command::new("kill")
-                                        .arg("-s")
-                                        .arg("INT")
-                                        .arg("-".to_owned() + &cmd.id().to_string())
-                                        .spawn().unwrap();
-                                    kill.wait().unwrap();
-
-
-                                    match cmd.try_wait() {
-                                        Err(e) => eprintln!("{}",e),
-                                        Ok(None) => {cmd.wait().unwrap();},
-                                        Ok(_) => (),
-                                    }
-                                }
+                                
+                                signal::kill(Pid::from_raw(-job.pid),Signal::SIGINT).unwrap();
                                 unsafe {
                                     match JOBS.delete_job(job.pid) {
                                         Err(e) => eprintln!("{}",e),
@@ -222,12 +209,12 @@ fn main() {
                     let mut cmds = job.pipeline.lock().unwrap(); 
                     let mut exited = false;
                     let mut msg: Option<process::ExitStatus> = None;
-                    let mut pid = 0;
+                    let mut pid: i32 = 0;
                     for cmd in cmds.iter_mut() {
                         match cmd.try_wait() {
                             Ok(Some(status)) => {
                                 if !exited {
-                                    pid = cmd.id();
+                                    pid = cmd.id() as i32;
                                 }
                                 exited = true;
                                 msg = Some(status);   
@@ -266,15 +253,8 @@ fn main() {
                     match job.state {
                         ProccessState::FG => {
 
-                                for cmd in job.pipeline.lock().unwrap().iter_mut() {
-
-                                    let mut kill = Command::new("kill")
-                                        .arg("-s")
-                                        .arg("TSTP")
-                                        .arg("-".to_owned() + &cmd.id().to_string())
-                                        .spawn().unwrap();
-                                    kill.wait().unwrap();
-                                }
+                                signal::kill(Pid::from_raw(-job.pid),Signal::SIGTSTP).unwrap();
+                                
                                 job.state = ProccessState::ST;
                                 println!("Job [{}] ({}) stopped by signal TSTP",job.jid,job.pid);
 
@@ -539,7 +519,7 @@ fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec
 }
 
 
-fn waitfg(pid: u32) {
+fn waitfg(pid: i32) {
     loop {
         let job = unsafe {JOBS.get_job_pid(pid)};
        
