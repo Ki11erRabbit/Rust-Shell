@@ -55,6 +55,14 @@ fn eval(cmdline: String) {
     }
 
     let set = parseargs(argv);
+
+    let cmds = set.0;
+    let stdin_redir = set.1;
+    let stdout_redir = set.2;
+
+    println!("{:?}",cmds);
+    println!("{:?}",stdin_redir);
+    println!("{:?}",stdout_redir);
 }
 
 fn parseline(cmdline: String) -> (i32,Vec<String>) {
@@ -73,7 +81,7 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
     }
 
     while array.len() != 0 {
-        //println!("{}",array);
+        println!("{}",array);
         //println!("array len: {}", array.len());
         match array.get(..1).unwrap() {
             "'" => {
@@ -88,14 +96,26 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
                         //println!("Space");
                         array.drain(..1);
                    },
+            "|" => {
+                        //println!("Space");
+                        argv.push(array.drain(..1).collect());
+                   },
+            "<" => {
+                        //println!("Space");
+                        argv.push(array.drain(..1).collect());
+                   },
+            ">" => {
+                        //println!("Space");
+                        argv.push(array.drain(..1).collect());
+                   },
             _ => {
                         //println!("Default");
-                        argv.push(array.drain(0..array.find(' ').unwrap()).collect());
+                        argv.push(array.drain(0..array.find(|c: char| c == '>' || c == '|' || c == '<' || c == ' ').unwrap()).collect());
 
                  } 
         }
 
-        //println!("{:?}",argv);
+        println!("{:?}",argv);
 
     }
 
@@ -103,9 +123,42 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
     return (bg,argv);
 }
 
-fn parseargs(argv: Vec<String>) -> (Vec<String>,Vec<i32>,Vec<i32>) {
-     
-    return (vec!["temp".to_string()],vec![1],vec![1]);
+fn parseargs(argv: Vec<String>) -> (Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
+    let mut cmds: Vec<Vec<String>> = Vec::new();
+    let mut stdin_redir: Vec<usize> = Vec::new();
+    let mut stdout_redir: Vec<usize> = Vec::new();
+
+    let mut curr_cmd = 0;
+    cmds.push(Vec::new());
+    stdin_redir.push(usize::MAX);
+    stdout_redir.push(usize::MAX);
+
+    for i in 0..argv.len() {
+        match argv[i].as_str() {
+            "|" => {
+                    stdout_redir[curr_cmd] = 0;
+                    stdin_redir.push(0);
+                    stdout_redir.push(usize::MAX);
+                    cmds.push(Vec::new());
+                    curr_cmd += 1;
+                },
+            "<" => {
+                    stdin_redir[curr_cmd] = cmds[curr_cmd].len();
+                },
+            ">" => {
+                    stdout_redir[curr_cmd] = cmds[curr_cmd].len();
+                },
+            _ => {
+                    cmds[curr_cmd].push(argv[i].as_str().to_string());
+
+                }
+        } 
+
+    }
+    
+
+
+    return (cmds,stdin_redir,stdout_redir);
 }
 
 fn builtin_cmd(argv: &Vec<String>) -> i32 {
