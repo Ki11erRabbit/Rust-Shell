@@ -50,9 +50,11 @@ fn eval(cmdline: String) {
     
     println!("{:?}",argv);
 
-    if builtin_cmd(argv) == 1 {
+    if builtin_cmd(&argv) == 1 {
         return;
     }
+
+    let set = parseargs(argv);
 }
 
 fn parseline(cmdline: String) -> (i32,Vec<String>) {
@@ -101,12 +103,12 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
     return (bg,argv);
 }
 
-fn parseargs(argv: Vec<&str>) -> (Vec<&str>,Vec<i32>,Vec<i32>) {
+fn parseargs(argv: Vec<String>) -> (Vec<String>,Vec<i32>,Vec<i32>) {
      
-    return (vec!["temp"],vec![1],vec![1]);
+    return (vec!["temp".to_string()],vec![1],vec![1]);
 }
 
-fn builtin_cmd(argv: Vec<String>) -> i32 {
+fn builtin_cmd(argv: &Vec<String>) -> i32 {
     if argv.len() == 0 {
         return 1;
     }
