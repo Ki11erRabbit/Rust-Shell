@@ -8,19 +8,27 @@ static mut VERBOSE:i32 = 0;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut emit_prompt = 1;
-    
-    if args.len() > 1 { 
-        for c in 0..args[1].len() {
-            match args[c].get(0..0).unwrap() {
-                "-" => continue,
-                "h" => usage(),
-                "v" => unsafe { VERBOSE = 1},
-                "p" => emit_prompt = 0,
-                _ => usage(),
+   
+    if args.len() > 1 {
+
+        if args[1].contains("-") {
+            let mut bad_input = true;
+            if args[1].contains("h") {
+                usage();
+            }
+            if args[1].contains("v") {
+                unsafe { VERBOSE = 1 };
+                bad_input = false;
+            }
+            if args[1].contains("p") {
+                emit_prompt = 0;
+                bad_input = false;
+            }
+            if bad_input {
+                usage();
             }
         }
-    }
-    
+    }    
 
     loop {
         let mut buffer = String::new();
@@ -41,14 +49,18 @@ fn main() {
 
 
 fn eval(cmdline: String) {
-    //println!("Eval");
+    if unsafe { VERBOSE == 1 } {
+        println!("Eval");
+    }
     let argv: Vec<String>;
     let _bg: i32;
     let pair = parseline(cmdline);
     _bg = pair.0;
     argv = pair.1;
     
-    //println!("{:?}",argv);
+    if unsafe { VERBOSE == 1 } {
+        println!("{:?}",argv);
+    }
 
     if builtin_cmd(&argv) == 1 {
         return;
@@ -61,9 +73,11 @@ fn eval(cmdline: String) {
     let stdin_redir = set.2;
     let stdout_redir = set.3;
 
-    /*println!("{:?}",cmds);
-    println!("{:?}",stdin_redir);
-    println!("{:?}",stdout_redir);*/
+    if unsafe { VERBOSE == 1 } {
+        println!("{:?}",cmds);
+        println!("{:?}",stdin_redir);
+        println!("{:?}",stdout_redir);
+    }
 
     let mut processes: Vec<Child> = Vec::new(); 
     for i in 0..cmds.len() {
@@ -94,7 +108,9 @@ fn eval(cmdline: String) {
 }
 
 fn parseline(cmdline: String) -> (i32,Vec<String>) {
-    //println!("Parseline");
+    if unsafe { VERBOSE == 1 } {
+        println!("Parseline");
+    }
     let mut argv: Vec<String> = Vec::new();
     let bg: i32;
     let mut array = cmdline.clone(); 
@@ -152,6 +168,9 @@ fn parseline(cmdline: String) -> (i32,Vec<String>) {
 }
 
 fn parseargs(argv: Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
+    if unsafe { VERBOSE == 1 } {
+        println!("parseargs");
+    }
     let mut cmds: Vec<String> = Vec::new();
     let mut args: Vec<Vec<String>> = Vec::new();
     let mut stdin_redir: Vec<usize> = Vec::new();
