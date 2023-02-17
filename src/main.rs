@@ -5,6 +5,8 @@ use std::fs::File;
 use std::os::unix::process::CommandExt;
 use std::sync::Mutex;
 use std::fmt;
+use signal_hook::{consts::*, iterator::Signals};
+use std::{thread, time};
 
 pub enum ProccessState {
     UNDEF,
@@ -73,6 +75,50 @@ impl Jobs {
        self.jobs.push(Job::new(pid,pgid,self.next_jid,state,cmdline,pipeline)); 
        self.next_jid += 1;
     }
+
+    pub fn delete_job(&mut self,pid: u32) -> Result<&str,&str> {
+        if pid < 1 {
+            return Err("Invalid PID");
+        }
+
+        for i in 0..self.jobs.len() {
+            if self.jobs[i].pid == pid {
+                self.jobs.remove(i);
+                self.set_next_jid();
+                return Ok("Successfully removed job");
+            }
+        }
+        return Err("Invalid PID");
+    }
+
+    fn set_next_jid(&mut self) {
+        let mut max = 0;
+        for job in self.jobs.iter() {
+           if job.jid > max {
+                max = job.jid;
+           } 
+        }
+        self.next_jid = max + 1;
+    }
+
+    pub fn get_job_pid(&self, pid: u32) -> Option<&Job> {
+        for job in self.jobs.iter() {
+            if job.pid == pid {
+
+                return Some(job);
+            }
+        
+        }
+        return None;
+    }
+    
+
+    pub fn iter(&self) -> std::slice::Iter<Job> {
+        self.jobs.iter()
+    }
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<Job> {
+        self.jobs.iter_mut()
+    }
 }
 
 impl fmt::Display for Jobs {
@@ -122,6 +168,135 @@ fn main() {
         }
     }    
 
+   let mut signals = Signals::new(&[SIGINT,SIGCHLD,SIGTSTP]);
+    thread::spawn(move || {
+        for sig in &mut signals.unwrap(){
+
+            if sig == SIGINT {
+                if unsafe {VERBOSE} == 1 {
+                    println!("sigint_handler");
+                }
+                
+                for job in unsafe {JOBS.iter_mut()} {
+                    
+                    match job.state {
+                        ProccessState::FG => {
+
+                                for cmd in job.pipeline.lock().unwrap().iter_mut() {
+
+                                    let mut kill = Command::new("kill")
+                                        .arg("-s")
+                                        .arg("INT")
+                                        .arg("-".to_owned() + &cmd.id().to_string())
+                                        .spawn().unwrap();
+                                    kill.wait().unwrap();
+
+
+                                    match cmd.try_wait() {
+                                        Err(e) => eprintln!("{}",e),
+                                        Ok(None) => {cmd.wait().unwrap();},
+                                        Ok(_) => (),
+                                    }
+                                }
+                                unsafe {
+                                    match JOBS.delete_job(job.pid) {
+                                        Err(e) => eprintln!("{}",e),
+                                        Ok(_) => (),
+                                    }
+                                }
+
+                        }
+                        _ => {
+                                continue;
+                        }
+                    }
+
+                }
+
+            }
+            else if sig == SIGCHLD {
+                if unsafe {VERBOSE} == 1 {
+                    println!("sigchild_handler");
+                }
+                for job in unsafe { JOBS.iter_mut()} {
+                    let mut cmds = job.pipeline.lock().unwrap(); 
+                    let mut exited = false;
+                    let mut msg: Option<process::ExitStatus> = None;
+                    let mut pid = 0;
+                    for cmd in cmds.iter_mut() {
+                        match cmd.try_wait() {
+                            Ok(Some(status)) => {
+                                if !exited {
+                                    pid = cmd.id();
+                                }
+                                exited = true;
+                                msg = Some(status);   
+                            },
+                            Ok(None) => (),
+                            Err(e) => println!("error attempting to wait: {e}"),
+                        }
+                        
+                    }
+                    if exited {
+                       
+                        if msg != None {
+                            println!("Job [{}] ({}) stopped by {}",job.jid,pid,msg.unwrap());
+                            unsafe {
+                                match JOBS.delete_job(pid) {
+                                    Err(e) => eprintln!("{}",e),
+                                    Ok(_) => (),
+                                } 
+                            }
+
+                        }
+
+                    }
+                }
+
+
+            }
+            else if sig == SIGTSTP {
+
+                if unsafe {VERBOSE} == 1 {
+                    println!("sigtstp_handler");
+                }
+                
+                for job in unsafe {JOBS.iter_mut()} {
+                    
+                    match job.state {
+                        ProccessState::FG => {
+
+                                for cmd in job.pipeline.lock().unwrap().iter_mut() {
+
+                                    let mut kill = Command::new("kill")
+                                        .arg("-s")
+                                        .arg("TSTP")
+                                        .arg("-".to_owned() + &cmd.id().to_string())
+                                        .spawn().unwrap();
+                                    kill.wait().unwrap();
+                                }
+                                job.state = ProccessState::ST;
+                                println!("Job [{}] ({}) stopped by signal TSTP",job.jid,job.pid);
+
+                        }
+                        _ => {
+                                continue;
+                        }
+                    }
+
+                }
+
+            }
+        }
+    });
+
+
+
+
+
+
+
+
     loop {
         let mut buffer = String::new();
         if emit_prompt == 1 {
@@ -145,9 +320,9 @@ fn eval(cmdline: String) {
         println!("Eval");
     }
     let argv: Vec<String>;
-    let _bg: i32;
+    let bg: i32;
     let pair = parseline(&cmdline);
-    _bg = pair.0;
+    bg = pair.0;
     argv = pair.1;
     
     if unsafe { VERBOSE == 1 } {
@@ -209,10 +384,29 @@ fn eval(cmdline: String) {
             group_id = processes[i].id().try_into().unwrap();
         }
     }
-    let temp =  group_id.try_into().unwrap();
-    unsafe {
-        JOBS.addjob(temp, temp, ProccessState::FG, cmdline, Mutex::new(processes));
+    
+    let pid =  group_id.try_into().unwrap();
+    if bg == 0 {
+        if unsafe { VERBOSE == 1 } {
+            println!("spawning in forground");
+        }
+        unsafe {
+            JOBS.addjob(pid, pid, ProccessState::FG, cmdline, Mutex::new(processes));
+        } 
+        waitfg(pid);
     }
+    else if bg == 1 {
+        if unsafe { VERBOSE == 1 } {
+            println!("spawning in background");
+        }
+
+        unsafe {
+            JOBS.addjob(pid, pid, ProccessState::BG, cmdline, Mutex::new(processes));
+        } 
+
+    }
+
+
 /*
     for i in 0..processes.len() {
         match processes[i].wait() {
@@ -233,7 +427,7 @@ fn parseline(cmdline: &String) -> (i32,Vec<String>) {
     array.pop();
     array.push(' ');
 
-    if cmdline.get(cmdline.len()..(cmdline.len()-1)) == Some("&") {
+    if cmdline.rfind("&") != None {
         bg = 1;
     }
     else {
@@ -267,6 +461,10 @@ fn parseline(cmdline: &String) -> (i32,Vec<String>) {
             ">" => {
                         //println!("Space");
                         argv.push(array.drain(..1).collect());
+                   },
+            "&" => {
+                        //println!("Space");
+                        array.drain(..1);
                    },
             _ => {
                         //println!("Default");
@@ -338,6 +536,25 @@ fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec
 
 
     return (cmds,args,stdin_redir,stdout_redir);
+}
+
+
+fn waitfg(pid: u32) {
+    loop {
+        let job = unsafe {JOBS.get_job_pid(pid)};
+       
+        match job {
+            Some(x) => match x.state {
+                ProccessState::FG =>  thread::sleep(time::Duration::from_secs(1)),
+                _ => break
+            }
+            None => break,
+        }
+    }
+
+    if unsafe { VERBOSE == 1} {
+        println!("Broke out");
+    }
 }
 
 fn builtin_cmd(argv: &Vec<String>) -> i32 {
