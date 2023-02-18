@@ -68,6 +68,22 @@ pub fn alias(argv: &Vec<String>, aliases: &mut BTreeMap<String,(String,Vec<Strin
     }
 
     aliases.insert(key.to_string(), (cmd.to_string(),args));
+}
+
+pub fn export(argv: &Vec<String>) {
+    if argv.len() < 4 {
+        eprintln!("Not enough argument for alias.");
+        return;
+    }
+
+    let key = &argv[1];
+    if argv[2].as_str() != "=" {
+        eprintln!("Equal sign (=) needed for exporting")
+    }
+
+    let args: String = argv.clone().drain(3..).collect::<Vec<String>>().join(" ");
+
+    env::set_var(key,args);
     
 
 }

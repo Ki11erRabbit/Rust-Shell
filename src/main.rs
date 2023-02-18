@@ -6,6 +6,7 @@ use std::process::{self,Command, Stdio, Child};
 use std::env;
 use std::io::{self,Write};
 use std::fs::File;
+use std::io::prelude::*;
 use std::os::unix::process::CommandExt;
 use signal_hook::{consts::*, iterator::Signals};
 use std::thread;
@@ -58,6 +59,13 @@ fn main() {
 
     setup_signal_handlers();
 
+    
+    match parse_rshrc(&mut aliases) {
+        Err(e) => eprintln!("{}",e),
+        Ok(_) => (),
+    }
+    
+
 
     loop {
         let mut buffer = String::new();
@@ -76,8 +84,33 @@ fn main() {
         io::stdin().read_line(&mut buffer)
             .expect("Failed to read line");
 
-        eval(buffer,&mut aliases);
+        eval(&buffer,&mut aliases);
     }
+}
+
+fn parse_rshrc(aliases: &mut BTreeMap<String, (String,Vec<String>)>) -> std::io::Result<()> {
+    let key = "HOME";
+    match env::var(key) {
+        Err(_) => {
+            eprintln!("User's home not set!\n Unable to read .rshrc");
+        },
+        Ok(val) => {
+            let rshrc_location = val + "/.rshrc";
+            
+            let mut file = File::open(rshrc_location)?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            let lines: Vec<&str> = contents.split('\n').collect();
+
+            for line in lines.iter() {
+                eval(line,aliases);
+            }
+
+
+
+        }
+    }
+    Ok(())
 }
 
 fn setup_signal_handlers() {
@@ -201,7 +234,7 @@ fn setup_signal_handlers() {
 }
 
 
-fn eval(cmdline: String, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
+fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
     if unsafe { VERBOSE == 1 } {
         println!("Eval");
     }
@@ -231,7 +264,7 @@ fn eval(cmdline: String, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
 
 }
 
-fn create_subproccesses(cmdline:String,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) {
+fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) {
 
     if unsafe { VERBOSE == 1 } {
         println!("{:?}",cmds);
@@ -306,14 +339,16 @@ fn create_subproccesses(cmdline:String,argv: Vec<String>,cmds: Vec<String>, args
 
 }
 
-fn parseline(cmdline: &String) -> (bool,Vec<String>) {
+fn parseline(cmdline: &str) -> (bool,Vec<String>) {
     if unsafe { VERBOSE == 1 } {
         println!("Parseline");
     }
     let mut argv: Vec<String> = Vec::new();
     let bg: bool;
-    let mut array = cmdline.clone(); 
-    array.pop();
+    let mut array = cmdline.to_string(); 
+    if array.contains("\n") {
+        array.pop();
+    } 
     array.push(' ');
 
     if cmdline.rfind("&") != None {
@@ -422,12 +457,56 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                                 cmd = val.0.clone();
                                 args[curr_cmd] = val.1.clone();
                             },
-                            None => cmd = argv[i].as_str().to_string(),
+                            None =>  {
+
+                                if argv[i].get(..1) == Some("$") {
+                                    match env::var(argv[i].clone().drain(1..).collect::<String>()) {
+                                        Ok(val) => {
+                                            if val.contains(" ") {
+                                                let mut var:Vec<&str> = val.split(" ").collect();
+                                                cmd = var[0].to_string();
+                                                var.remove(0);
+                                                for arg in var.iter() {
+                                                    args[curr_cmd].push(arg.to_string());
+                                                } 
+                                            }
+                                            else {
+                                                cmd = val;
+                                            }
+                                        }
+                                        Err(_) => cmd = argv[i].as_str().to_string(),
+                                    }
+                                }
+                                else {
+                                    cmd = argv[i].as_str().to_string();
+                                }
+
+                            },
                         }
                         cmds[curr_cmd] = cmd;
                     }
                     else {
-                        args[curr_cmd].push(argv[i].as_str().to_string());
+                        if argv[i].get(..1) == Some("$") {
+
+                            match env::var(argv[i].clone().drain(1..).collect::<String>()) {
+                                Ok(val) => {
+                                    if val.contains(" ") {
+                                        let var:Vec<&str> = val.split(" ").collect();
+                                        for arg in var.iter() {
+                                            args[curr_cmd].push(arg.to_string());
+                                        } 
+                                    }
+                                    else {
+                                        args[curr_cmd].push(val);
+                                    }
+                                }
+                                Err(_) => args[curr_cmd].push(argv[i].as_str().to_string()),
+                            }
+
+                        }
+                        else {
+                            args[curr_cmd].push(argv[i].as_str().to_string());
+                        }
                     }
                 }
         } 
@@ -592,6 +671,10 @@ fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<Stri
     }
     else if argv[0].as_str() == "alias" {
         builtin::alias(argv, aliases);
+        return 1;
+    }
+    else if argv[0].as_str() == "export" {
+        builtin::export(argv);
         return 1;
     }
     

@@ -29,8 +29,8 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new(pid: i32, pgid: i32, jid: u32, state: ProccessState, cmdline: String) -> Self {
-        Self {pid: pid, pgid: pgid, jid: jid, state: state, cmdline: cmdline}
+    pub fn new(pid: i32, pgid: i32, jid: u32, state: ProccessState, cmdline: &str) -> Self {
+        Self {pid: pid, pgid: pgid, jid: jid, state: state, cmdline: cmdline.to_string()}
     }
 }
 
@@ -63,7 +63,7 @@ impl Jobs {
         Self {jobs: Vec::new(),next_jid: 1}
     }
 
-    pub fn addjob(&mut self, pid: i32, pgid: i32, state: ProccessState, cmdline: String) {
+    pub fn addjob(&mut self, pid: i32, pgid: i32, state: ProccessState, cmdline: &str) {
        self.jobs.push(Job::new(pid,pgid,self.next_jid,state,cmdline)); 
        self.next_jid += 1;
     }
