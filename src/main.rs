@@ -1,154 +1,22 @@
+mod builtin;
+mod job;
+
+use crate::job::{ProccessState,Job,Jobs};
 use std::process::{self,Command, Stdio, Child};
 use std::env;
 use std::io::{self,Write};
 use std::fs::File;
 use std::os::unix::process::CommandExt;
-use std::sync::Mutex;
-use std::fmt;
 use signal_hook::{consts::*, iterator::Signals};
 use std::thread;
 use nix::unistd::Pid;
 use nix::unistd::pause;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait;
-use std::path::Path;
 use std::collections::BTreeMap;
 
 
-pub enum ProccessState {
-    UNDEF,
-    FG,
-    BG,
-    ST
-}
 
-impl fmt::Display for ProccessState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProccessState::UNDEF => write!(f,"UNDEF"),
-            ProccessState::FG => write!(f,"FG"),
-            ProccessState::BG => write!(f,"BG"),
-            ProccessState::ST => write!(f,"ST"),
-        }
-    }
-}
-
-pub struct Job {
-    pid: i32,
-    pgid: i32,
-    jid: u32,
-    state: ProccessState,
-    cmdline: String,
-    pipeline: Mutex<Vec<Child>>
-
-}
-
-impl Job {
-    pub fn new(pid: i32, pgid: i32, jid: u32, state: ProccessState, cmdline: String, pipeline: Mutex<Vec<Child>>) -> Self {
-        Self {pid: pid, pgid: pgid, jid: jid, state: state, cmdline: cmdline, pipeline: pipeline}
-    }
-}
-
-impl fmt::Display for Job {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let result = write!(f,"[{}] ({}) ",self.jid,self.pid);
-        if result == Err(std::fmt::Error) {
-            return result;
-        }
-        let result = match self.state {
-            ProccessState::FG => write!(f,"Foreground "),
-            ProccessState::BG => write!(f,"Running "),
-            ProccessState::ST => write!(f,"Stopped "),
-            ProccessState::UNDEF =>  write!(f,"listjobs: Internal error: job[{}].state={} ",self.jid,self.state),
-        };
-        if result == Err(std::fmt::Error) {
-            return result;
-        }
-        write!(f,"{}",self.cmdline)
-    }
-}
-
-pub struct Jobs {
-    jobs: Vec<Job>,
-    next_jid: u32,
-}
-
-impl Jobs {
-    pub const fn new() -> Self {
-        Self {jobs: Vec::new(),next_jid: 1}
-    }
-
-    pub fn addjob(&mut self, pid: i32, pgid: i32, state: ProccessState, cmdline: String, pipeline: Mutex<Vec<Child>>) {
-       self.jobs.push(Job::new(pid,pgid,self.next_jid,state,cmdline,pipeline)); 
-       self.next_jid += 1;
-    }
-
-    pub fn delete_job(&mut self,pid: i32) -> Result<&str,&str> {
-        if pid < 1 {
-            return Err("Invalid PID");
-        }
-
-        for i in 0..self.jobs.len() {
-            if self.jobs[i].pid == pid {
-                self.jobs.remove(i);
-                self.set_next_jid();
-                return Ok("Successfully removed job");
-            }
-        }
-        return Err("Invalid PID");
-    }
-
-    fn set_next_jid(&mut self) {
-        let mut max = 0;
-        for job in self.jobs.iter() {
-           if job.jid > max {
-                max = job.jid;
-           } 
-        }
-        self.next_jid = max + 1;
-    }
-
-    pub fn get_job_pid(&mut self, pid: i32) -> Option<&mut Job> {
-        for job in self.jobs.iter_mut() {
-            if job.pid == pid {
-
-                return Some(job);
-            }
-        
-        }
-        return None;
-    }
-
-    pub fn get_job_jid(&mut self, jid: u32) -> Option<&mut Job> {
-        if jid > self.next_jid || jid <= 0 {
-            return None;
-        } 
-        
-        return Some(&mut self.jobs[jid as usize - 1]);
-    }
-    
-
-    pub fn iter(&self) -> std::slice::Iter<Job> {
-        self.jobs.iter()
-    }
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<Job> {
-        self.jobs.iter_mut()
-    }
-}
-
-impl fmt::Display for Jobs {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for job in self.jobs.iter() {
-            
-            let result = write!(f,"{}",job);
-
-            if result == Err(std::fmt::Error) {
-                return result;
-            }
-        }
-        Ok(())
-    }
-}
 
 
 const PROMPT: &str = "tsh> ";
@@ -187,6 +55,32 @@ fn main() {
             }
         }
     }    
+
+    setup_signal_handlers();
+
+
+    loop {
+        let mut buffer = String::new();
+        if emit_prompt {
+            let curr_dir = env::current_dir().unwrap();
+            let print_prompt;
+            if path_in_prompt {
+                print_prompt = format!("tsh {} > ",curr_dir.into_os_string().to_str().unwrap());
+            }
+            else {
+                print_prompt = PROMPT.to_string();
+            }
+            print!("{}",print_prompt);
+            io::stdout().flush().unwrap();
+        }
+        io::stdin().read_line(&mut buffer)
+            .expect("Failed to read line");
+
+        eval(buffer,&mut aliases);
+    }
+}
+
+fn setup_signal_handlers() {
 
    let signals = Signals::new(&[SIGINT,SIGCHLD,SIGTSTP]);
     thread::spawn(move || {
@@ -304,26 +198,6 @@ fn main() {
         }
     });
 
-
-    loop {
-        let mut buffer = String::new();
-        if emit_prompt {
-            let curr_dir = env::current_dir().unwrap();
-            let print_prompt;
-            if path_in_prompt {
-                print_prompt = format!("tsh {} > ",curr_dir.into_os_string().to_str().unwrap());
-            }
-            else {
-                print_prompt = PROMPT.to_string();
-            }
-            print!("{}",print_prompt);
-            io::stdout().flush().unwrap();
-        }
-        io::stdin().read_line(&mut buffer)
-            .expect("Failed to read line");
-
-        eval(buffer,&mut aliases);
-    }
 }
 
 
@@ -332,7 +206,7 @@ fn eval(cmdline: String, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
         println!("Eval");
     }
     let argv: Vec<String>;
-    let bg: i32;
+    let bg: bool;
     let pair = parseline(&cmdline);
     bg = pair.0;
     argv = pair.1;
@@ -351,6 +225,13 @@ fn eval(cmdline: String, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
     let args = set.1;
     let stdin_redir = set.2;
     let stdout_redir = set.3;
+
+    create_subproccesses(cmdline,argv,cmds, args, stdin_redir, stdout_redir,bg);
+
+
+}
+
+fn create_subproccesses(cmdline:String,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) {
 
     if unsafe { VERBOSE == 1 } {
         println!("{:?}",cmds);
@@ -403,52 +284,43 @@ fn eval(cmdline: String, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
     }
     
     let pid = group_id.try_into().unwrap();
-    if bg == 0 {
+    if !bg {
         if unsafe { VERBOSE == 1 } {
             println!("spawning in forground");
         }
         unsafe {
-            JOBS.addjob(pid, pid, ProccessState::FG, cmdline, Mutex::new(processes));
+            JOBS.addjob(pid, pid, ProccessState::FG, cmdline);
         } 
         waitfg(pid);
     }
-    else if bg == 1 {
+    else if bg {
         if unsafe { VERBOSE == 1 } {
             println!("spawning in background");
         }
 
         unsafe {
-            JOBS.addjob(pid, pid, ProccessState::BG, cmdline, Mutex::new(processes));
+            JOBS.addjob(pid, pid, ProccessState::BG, cmdline);
         } 
 
     }
 
-
-/*
-    for i in 0..processes.len() {
-        match processes[i].wait() {
-            Ok(_status) => (),
-            Err(error) => eprintln!("{}", error)
-        }
-    }*/
-
 }
 
-fn parseline(cmdline: &String) -> (i32,Vec<String>) {
+fn parseline(cmdline: &String) -> (bool,Vec<String>) {
     if unsafe { VERBOSE == 1 } {
         println!("Parseline");
     }
     let mut argv: Vec<String> = Vec::new();
-    let bg: i32;
+    let bg: bool;
     let mut array = cmdline.clone(); 
     array.pop();
     array.push(' ');
 
     if cmdline.rfind("&") != None {
-        bg = 1;
+        bg = true;
     }
     else {
-        bg = 0;
+        bg = false;
     }
 
     while array.len() != 0 {
@@ -566,7 +438,7 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
     return (cmds,args,stdin_redir,stdout_redir);
 }
 
-fn do_bgfg(argv: &Vec<String>) {
+pub fn do_bgfg(argv: &Vec<String>) {
     if argv.len() == 1 {
         println!("{} command requires PID or %jobid argument",argv[0]);
         return;
@@ -662,7 +534,6 @@ fn do_bgfg(argv: &Vec<String>) {
     }
 }
 
-
 fn waitfg(pid: i32) {
     let mut counter = 0;
     loop {
@@ -690,75 +561,6 @@ fn waitfg(pid: i32) {
     }
 }
 
-fn change_dir(argv: &Vec<String>) {
-    let path;
-    if argv.len() == 1 {
-        let key = "HOME";
-        match env::var(key) {
-            Err(_) => {
-                eprintln!("User's home not set!");
-                return;
-            }
-            Ok(val) => {
-                path = Path::new(&val);
-
-                match env::set_current_dir(path) {
-                    Ok(_) => (),
-                    Err(e) => eprintln!("{}",e),
-                }
-
-                return;
-
-            }
-        }
-    }
-    else {
-        path = Path::new(&argv[1]);
-    }
-
-    match env::set_current_dir(path) {
-        Ok(_) => (),
-        Err(_) => eprintln!("cd: no such file or directory: {}",argv[1]),
-    }
-}
-
-fn alias(argv: &Vec<String>, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
-
-    if argv.len() == 1 {
-        for (key, value) in aliases.iter() {
-           print!("{} = {} ",key,value.0); 
-           for arg in value.1.iter() {
-            print!("{} ",arg);
-           }
-           println!("");
-        }
-        return;
-    }
-
-    if argv.len() < 4 {
-        eprintln!("Not enough arguments for alias.");
-        return;
-    }
-    
-    let key = &argv[1];
-
-    if argv[2].as_str() != "=" {
-        eprintln!("Equal sign (=) needed for alias.");
-        return;
-    }
-    let mut args: Vec<String> = argv.clone().drain(3..).collect();
-    let cmd = args[0].clone();
-    if args.len() > 1 {
-        args = args.drain(1..).collect();
-    }
-    else {
-        args = Vec::new();
-    }
-
-    aliases.insert(key.to_string(), (cmd.to_string(),args));
-    
-
-}
 
 fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<String>)>) -> i32 {
     if argv.len() == 0 {
@@ -785,11 +587,11 @@ fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<Stri
         return 1;
     }
     else if argv[0].as_str() == "cd" {
-        change_dir(argv); 
+        builtin::change_dir(argv); 
         return 1;
     }
     else if argv[0].as_str() == "alias" {
-        alias(argv, aliases);
+        builtin::alias(argv, aliases);
         return 1;
     }
     
