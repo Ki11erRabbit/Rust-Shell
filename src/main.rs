@@ -6,8 +6,9 @@ use std::os::unix::process::CommandExt;
 use std::sync::Mutex;
 use std::fmt;
 use signal_hook::{consts::*, iterator::Signals};
-use std::{thread, time};
+use std::thread;
 use nix::unistd::Pid;
+use nix::unistd::pause;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait;
 
@@ -218,7 +219,7 @@ fn main() {
 
                 loop {
                     match wait::waitpid(Pid::from_raw(-1), Some(flags)) {
-                        Err(e) => break,
+                        Err(_) => break,
                         Ok(x) => {
                             match x {
                                 wait::WaitStatus::StillAlive => break,
@@ -268,82 +269,6 @@ fn main() {
                         
                     
                 
-/*
-                for job in unsafe { JOBS.iter_mut()} {
-                    let mut cmds = job.pipeline.lock().unwrap(); 
-                    let mut exited = false;
-                    let mut signaled = false;
-                    let mut stopped = false;
-                    let mut pid: i32 = 0;
-                    let mut signal= Signal::SIGKILL;
-
-
-                    for cmd in cmds.iter_mut() {
-                        
-
-
-                        match wait::waitpid(Pid::from_raw(cmd.id().try_into().unwrap()), Some(flags)) {
-                            Err(e) => eprintln!("{}",e),
-                            Ok(x) => {
-                                match x {
-                                    wait::WaitStatus::StillAlive => break,
-                                    wait::WaitStatus::Exited(_pid_t,_status) => {
-                                        if !exited {
-                                            pid = cmd.id() as i32;
-                                        }
-                                        exited = true;
-                                    }
-                                    wait::WaitStatus::Signaled(_pid_t, signal_t, _core_dump) => {
-                                        if !exited {
-                                            pid = cmd.id() as i32;
-                                            signal = signal_t;
-                                        }
-                                        signaled = true;
-                                        exited = true;
-                                    },
-                                    wait::WaitStatus::Stopped(_pid_t,signal_t) => {
-                                        if !stopped {
-                                            pid = cmd.id() as i32;
-                                            signal = signal_t
-                                        }
-                                        signaled = true;
-                                        stopped = true;
-                                    }
-                                    _ => (),
-                                }
-                            }
-
-                        }
-                        
-                    }
-                    if exited {
-                       
-                        if signaled {
-                            println!("Job [{}] ({}) terminated by signal {}",job.jid,job.pgid,signal);
-                        }
-
-                        //let job = unsafe { JOBS.get_job_pid(pid).unwrap() };
-
-                        /*for child in job.pipeline.lock().unwrap().iter_mut() {
-                            match child.try_wait() {
-                                Ok(_) => (),
-                                Err(e) => eprintln!("{}",e),
-                            }
-                        }*/
-
-                        unsafe { 
-                            match JOBS.delete_job(pid) {
-                                Err(e) => eprintln!("{}",e),
-                                Ok(_) => (),
-                            } 
-                        }
-                    }
-                    else if signaled {
-                        println!("Job [{}] ({}) stopped by signal {}",job.jid,job.pgid,signal);
-                        job.state = ProccessState::ST;
-
-                    }
-                }*/
 
 
             }
@@ -370,12 +295,6 @@ fn main() {
             }
         }
     });
-
-
-
-
-
-
 
 
     loop {
@@ -715,16 +634,25 @@ fn do_bgfg(argv: &Vec<String>) {
 
 
 fn waitfg(pid: i32) {
+    let mut counter = 0;
     loop {
         let job = unsafe {JOBS.get_job_pid(pid)};
        
         match job {
             Some(x) => match x.state {
-                ProccessState::FG =>  continue, //thread::sleep(time::Duration::from_secs_f64(0.1)),
+                ProccessState::FG => {
+                    if unsafe { VERBOSE == 1} {
+                        println!("{}", x);
+                    }
+                    if counter == 1 {
+                        pause();
+                    }
+                }, 
                 _ => break
             }
             None => break,
         }
+        counter += 1;
     }
 
     if unsafe { VERBOSE == 1} {
