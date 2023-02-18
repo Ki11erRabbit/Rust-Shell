@@ -370,7 +370,10 @@ fn eval(cmdline: String) {
 
         match command.spawn() {
             Ok(x) => processes.push(x),
-            Err(y) => eprintln!("tsh: command not found: {} {}", cmds[i],y)
+            Err(_) => {
+                eprintln!("{}: Command not found", cmds[i]);
+                return;
+            },
         }
         if unsafe { VERBOSE == 1 } {
             
