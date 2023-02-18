@@ -11,6 +11,7 @@ use nix::unistd::Pid;
 use nix::unistd::pause;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait;
+use std::path::Path;
 
 pub enum ProccessState {
     UNDEF,
@@ -157,7 +158,8 @@ static mut JOBS: Jobs = Jobs::new();
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut emit_prompt = 1;
+    let mut emit_prompt = true;
+    let mut path_in_prompt = false;
    
     if args.len() > 1 {
 
@@ -171,7 +173,11 @@ fn main() {
                 bad_input = false;
             }
             if args[1].contains("p") {
-                emit_prompt = 0;
+                emit_prompt = false;
+                bad_input = false;
+            }
+            if args[1].contains("a") {
+                path_in_prompt = true;
                 bad_input = false;
             }
             if bad_input {
@@ -299,8 +305,16 @@ fn main() {
 
     loop {
         let mut buffer = String::new();
-        if emit_prompt == 1 {
-            print!("{}",PROMPT);
+        if emit_prompt {
+            let curr_dir = env::current_dir().unwrap();
+            let print_prompt;
+            if path_in_prompt {
+                print_prompt = format!("tsh {} > ",curr_dir.into_os_string().to_str().unwrap());
+            }
+            else {
+                print_prompt = PROMPT.to_string();
+            }
+            print!("{}",print_prompt);
             io::stdout().flush().unwrap();
         }
         io::stdin().read_line(&mut buffer)
@@ -663,6 +677,38 @@ fn waitfg(pid: i32) {
     }
 }
 
+fn change_dir(argv: &Vec<String>) {
+    let path;
+    if argv.len() == 1 {
+        let key = "HOME";
+        match env::var(key) {
+            Err(_) => {
+                eprintln!("User's home not set!");
+                return;
+            }
+            Ok(val) => {
+                path = Path::new(&val);
+
+                match env::set_current_dir(path) {
+                    Ok(_) => (),
+                    Err(e) => eprintln!("{}",e),
+                }
+
+                return;
+
+            }
+        }
+    }
+    else {
+        path = Path::new(&argv[1]);
+    }
+
+    match env::set_current_dir(path) {
+        Ok(_) => (),
+        Err(_) => eprintln!("cd: no such file or directory: {}",argv[1]),
+    }
+}
+
 fn builtin_cmd(argv: &Vec<String>) -> i32 {
     if argv.len() == 0 {
         return 1;
@@ -687,6 +733,10 @@ fn builtin_cmd(argv: &Vec<String>) -> i32 {
         do_bgfg(&argv);
         return 1;
     }
+    else if argv[0].as_str() == "cd" {
+        change_dir(argv); 
+        return 1;
+    }
     
     return 0;
 
@@ -698,6 +748,7 @@ fn usage() {
     println!("   -h   print this message");
     println!("   -v   print additional diagnostic information");
     println!("   -p   do not emit a command prompt");
+    println!("   -a   include the path in the prompt");
     process::exit(1);
 
 }
