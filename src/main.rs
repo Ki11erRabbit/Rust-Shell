@@ -12,6 +12,8 @@ use nix::unistd::pause;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait;
 use std::path::Path;
+use std::collections::BTreeMap;
+
 
 pub enum ProccessState {
     UNDEF,
@@ -155,8 +157,8 @@ static mut JOBS: Jobs = Jobs::new();
 
 
 
-
 fn main() {
+    let mut aliases: BTreeMap<String,(String,Vec<String>)> = BTreeMap::new();
     let args: Vec<String> = env::args().collect();
     let mut emit_prompt = true;
     let mut path_in_prompt = false;
@@ -320,12 +322,12 @@ fn main() {
         io::stdin().read_line(&mut buffer)
             .expect("Failed to read line");
 
-        eval(buffer);
+        eval(buffer,&mut aliases);
     }
 }
 
 
-fn eval(cmdline: String) {
+fn eval(cmdline: String, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
     if unsafe { VERBOSE == 1 } {
         println!("Eval");
     }
@@ -339,11 +341,11 @@ fn eval(cmdline: String) {
         println!("{:?}",argv);
     }
 
-    if builtin_cmd(&argv) == 1 {
+    if builtin_cmd(&argv,aliases) == 1 {
         return;
     }
 
-    let set = parseargs(&argv);
+    let set = parseargs(&argv,&aliases);
 
     let cmds = set.0;
     let args = set.1;
@@ -477,13 +479,17 @@ fn parseline(cmdline: &String) -> (i32,Vec<String>) {
                         //println!("Space");
                         argv.push(array.drain(..1).collect());
                    },
+            "=" => {
+                        //println!("Space");
+                        argv.push(array.drain(..1).collect());
+                   },
             "&" => {
                         //println!("Space");
                         array.drain(..1);
                    },
             _ => {
                         //println!("Default");
-                        argv.push(array.drain(0..array.find(|c: char| c == '>' || c == '|' || c == '<' || c == ' ').unwrap()).collect());
+                        argv.push(array.drain(0..array.find(|c: char| c == '>' || c == '|' || c == '<' || c == ' ' || c == '=').unwrap()).collect());
 
                  } 
         }
@@ -496,7 +502,7 @@ fn parseline(cmdline: &String) -> (i32,Vec<String>) {
     return (bg,argv);
 }
 
-fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
+fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
     if unsafe { VERBOSE == 1 } {
         println!("parseargs");
     }
@@ -538,7 +544,15 @@ fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec
                         continue;
                     }
                     if cmds[curr_cmd].as_str() == "" {
-                        cmds[curr_cmd] = argv[i].as_str().to_string();
+                        let cmd;
+                        match aliases.get(&argv[i]) {
+                            Some(val) => {
+                                cmd = val.0.clone();
+                                args[curr_cmd] = val.1.clone();
+                            },
+                            None => cmd = argv[i].as_str().to_string(),
+                        }
+                        cmds[curr_cmd] = cmd;
                     }
                     else {
                         args[curr_cmd].push(argv[i].as_str().to_string());
@@ -548,7 +562,6 @@ fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec
 
     }
     
-
 
     return (cmds,args,stdin_redir,stdout_redir);
 }
@@ -709,7 +722,45 @@ fn change_dir(argv: &Vec<String>) {
     }
 }
 
-fn builtin_cmd(argv: &Vec<String>) -> i32 {
+fn alias(argv: &Vec<String>, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
+
+    if argv.len() == 1 {
+        for (key, value) in aliases.iter() {
+           print!("{} = {} ",key,value.0); 
+           for arg in value.1.iter() {
+            print!("{} ",arg);
+           }
+           println!("");
+        }
+        return;
+    }
+
+    if argv.len() < 4 {
+        eprintln!("Not enough arguments for alias.");
+        return;
+    }
+    
+    let key = &argv[1];
+
+    if argv[2].as_str() != "=" {
+        eprintln!("Equal sign (=) needed for alias.");
+        return;
+    }
+    let mut args: Vec<String> = argv.clone().drain(3..).collect();
+    let cmd = args[0].clone();
+    if args.len() > 1 {
+        args = args.drain(1..).collect();
+    }
+    else {
+        args = Vec::new();
+    }
+
+    aliases.insert(key.to_string(), (cmd.to_string(),args));
+    
+
+}
+
+fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<String>)>) -> i32 {
     if argv.len() == 0 {
         return 1;
     }
@@ -735,6 +786,10 @@ fn builtin_cmd(argv: &Vec<String>) -> i32 {
     }
     else if argv[0].as_str() == "cd" {
         change_dir(argv); 
+        return 1;
+    }
+    else if argv[0].as_str() == "alias" {
+        alias(argv, aliases);
         return 1;
     }
     
