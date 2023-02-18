@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 signal-hook = "0.3.15"
+nix = "0.26.2"

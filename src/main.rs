@@ -9,6 +9,7 @@ use signal_hook::{consts::*, iterator::Signals};
 use std::{thread, time};
 use nix::unistd::Pid;
 use nix::sys::signal::{self, Signal};
+use nix::sys::wait;
 
 pub enum ProccessState {
     UNDEF,
@@ -103,8 +104,8 @@ impl Jobs {
         self.next_jid = max + 1;
     }
 
-    pub fn get_job_pid(&self, pid: i32) -> Option<&Job> {
-        for job in self.jobs.iter() {
+    pub fn get_job_pid(&mut self, pid: i32) -> Option<&mut Job> {
+        for job in self.jobs.iter_mut() {
             if job.pid == pid {
 
                 return Some(job);
@@ -112,6 +113,14 @@ impl Jobs {
         
         }
         return None;
+    }
+
+    pub fn get_job_jid(&mut self, jid: u32) -> Option<&mut Job> {
+        if jid > self.next_jid || jid <= 0 {
+            return None;
+        } 
+        
+        return Some(&mut self.jobs[jid as usize - 1]);
     }
     
 
@@ -170,7 +179,7 @@ fn main() {
         }
     }    
 
-   let mut signals = Signals::new(&[SIGINT,SIGCHLD,SIGTSTP]);
+   let signals = Signals::new(&[SIGINT,SIGCHLD,SIGTSTP]);
     thread::spawn(move || {
         for sig in &mut signals.unwrap(){
 
@@ -205,37 +214,71 @@ fn main() {
                 if unsafe {VERBOSE} == 1 {
                     println!("sigchild_handler");
                 }
+                
+
+                let flags: wait::WaitPidFlag = wait::WaitPidFlag::WNOHANG | wait::WaitPidFlag::WUNTRACED;
                 for job in unsafe { JOBS.iter_mut()} {
                     let mut cmds = job.pipeline.lock().unwrap(); 
                     let mut exited = false;
-                    let mut msg: Option<process::ExitStatus> = None;
+                    let mut signaled = false;
+                    let mut stopped = false;
                     let mut pid: i32 = 0;
+                    let mut signal= Signal::SIGKILL;
+
+
                     for cmd in cmds.iter_mut() {
-                        match cmd.try_wait() {
-                            Ok(Some(status)) => {
-                                if !exited {
-                                    pid = cmd.id() as i32;
+                        
+
+
+                        match wait::waitpid(Pid::from_raw(cmd.id().try_into().unwrap()), Some(flags)) {
+                            Err(e) => eprintln!("{}",e),
+                            Ok(x) => {
+                                match x {
+                                    wait::WaitStatus::StillAlive => break,
+                                    wait::WaitStatus::Exited(_pid_t,_status) => {
+                                        if !exited {
+                                            pid = cmd.id() as i32;
+                                        }
+                                        exited = true;
+                                    }
+                                    wait::WaitStatus::Signaled(_pid_t, signal_t, _core_dump) => {
+                                        if !exited {
+                                            pid = cmd.id() as i32;
+                                            signal = signal_t;
+                                        }
+                                        signaled = true;
+                                        exited = true;
+                                    },
+                                    wait::WaitStatus::Stopped(_pid_t,signal_t) => {
+                                        if !stopped {
+                                            pid = cmd.id() as i32;
+                                            signal = signal_t
+                                        }
+                                        signaled = true;
+                                        stopped = true;
+                                    }
+                                    _ => (),
                                 }
-                                exited = true;
-                                msg = Some(status);   
-                            },
-                            Ok(None) => (),
-                            Err(e) => println!("error attempting to wait: {e}"),
+                            }
+
                         }
                         
                     }
                     if exited {
                        
-                        if msg != None {
-                            println!("Job [{}] ({}) stopped by {}",job.jid,pid,msg.unwrap());
-                            unsafe {
-                                match JOBS.delete_job(pid) {
-                                    Err(e) => eprintln!("{}",e),
-                                    Ok(_) => (),
-                                } 
-                            }
-
+                        if signaled {
+                            println!("Job [{}] ({}) terminated by signal {}",job.jid,job.pgid,signal);
                         }
+                        unsafe { 
+                            match JOBS.delete_job(pid) {
+                                Err(e) => eprintln!("{}",e),
+                                Ok(_) => (),
+                            } 
+                        }
+                    }
+                    else if signaled {
+                        println!("Job [{}] ({}) stopped by signal {}",job.jid,job.pgid,signal);
+                        job.state = ProccessState::ST;
 
                     }
                 }
@@ -253,11 +296,7 @@ fn main() {
                     match job.state {
                         ProccessState::FG => {
 
-                                signal::kill(Pid::from_raw(-job.pid),Signal::SIGTSTP).unwrap();
-                                
-                                job.state = ProccessState::ST;
-                                println!("Job [{}] ({}) stopped by signal TSTP",job.jid,job.pid);
-
+                                signal::kill(Pid::from_raw(-job.pid),Signal::SIGTSTP).unwrap();        
                         }
                         _ => {
                                 continue;
@@ -518,6 +557,102 @@ fn parseargs(argv: &Vec<String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec
     return (cmds,args,stdin_redir,stdout_redir);
 }
 
+fn do_bgfg(argv: &Vec<String>) {
+    if argv.len() == 1 {
+        println!("{} command requires PID or %jobid argument",argv[0]);
+        return;
+    }
+
+    if argv[0].as_str() == "fg" {
+        let result;
+        let num;
+        let mut jid = false;
+        if argv[1].find("%") != None {
+            jid = true;
+            result = argv[1].clone().drain(1..).collect::<String>().parse::<u32>();
+        }
+        else {
+            result = argv[1].clone().drain(..).collect::<String>().parse::<u32>();
+        }
+
+        match result {
+            Ok(val) => num = val,
+            Err(_) => {
+                eprintln!("{}: argument must be a PID or %jobid",argv[0]);
+                return;
+            },
+        }
+        
+        let job: Option<&mut Job>;
+        if jid {
+            job = unsafe { JOBS.get_job_jid(num) };
+        }
+        else {
+            job = unsafe { JOBS.get_job_pid(num as i32) };
+        }
+
+        match job {
+            Some(job) => {
+                job.state = ProccessState::FG;
+                signal::kill(Pid::from_raw(-job.pgid),Signal::SIGCONT).unwrap();
+
+                waitfg(job.pgid);
+            },
+            None => {
+                if jid {
+                    eprintln!("%{}: No such job",num);
+                }
+                else {
+                    eprintln!("({}): No such process",num);
+                }
+            }
+        }
+    }
+    else if argv[0].as_str() == "bg" {
+        let result;
+        let num;
+        let mut jid = false;
+        if argv[1].find("%") != None {
+            jid = true;
+            result = argv[1].clone().drain(1..).collect::<String>().parse::<u32>();
+        }
+        else {
+            result = argv[1].clone().drain(..).collect::<String>().parse::<u32>();
+        }
+
+        match result {
+            Ok(val) => num = val,
+            Err(_) => {
+                eprintln!("{}: argument must be a PID or %jobid",argv[0]);
+                return;
+            },
+        }
+        
+        let job: Option<&mut Job>;
+        if jid {
+            job = unsafe { JOBS.get_job_jid(num) };
+        }
+        else {
+            job = unsafe { JOBS.get_job_pid(num as i32) };
+        }
+
+        match job {
+            Some(job) => {
+                job.state = ProccessState::BG;
+                signal::kill(Pid::from_raw(-job.pgid),Signal::SIGCONT).unwrap();
+            },
+            None => {
+                if jid {
+                    eprintln!("%{}: No such job",num);
+                }
+                else {
+                    eprintln!("({}): No such process",num);
+                }
+            }
+        }
+    }
+}
+
 
 fn waitfg(pid: i32) {
     loop {
@@ -551,6 +686,14 @@ fn builtin_cmd(argv: &Vec<String>) -> i32 {
         unsafe {print!("{}",JOBS);}
         io::stdout().flush().unwrap();
  
+        return 1;
+    }
+    else if argv[0].as_str() == "fg" {
+        do_bgfg(&argv);
+        return 1;
+    }
+    else if argv[0].as_str() == "bg" {
+        do_bgfg(&argv);
         return 1;
     }
     
