@@ -214,9 +214,61 @@ fn main() {
                 if unsafe {VERBOSE} == 1 {
                     println!("sigchild_handler");
                 }
-                
-
                 let flags: wait::WaitPidFlag = wait::WaitPidFlag::WNOHANG | wait::WaitPidFlag::WUNTRACED;
+
+                loop {
+                    match wait::waitpid(Pid::from_raw(-1), Some(flags)) {
+                        Err(e) => break,
+                        Ok(x) => {
+                            match x {
+                                wait::WaitStatus::StillAlive => break,
+                                wait::WaitStatus::Exited(pid,_status) => {
+                                    unsafe { 
+                                        match JOBS.delete_job(pid.as_raw()) {
+                                            Ok(_) => (),
+                                            Err(_) => (),
+                                        } 
+                                    };
+
+                                }
+                                wait::WaitStatus::Signaled(pid, signal, _core_dump) => {
+                                    let job;
+                                    unsafe { 
+                                        match JOBS.get_job_pid(pid.as_raw()) {
+                                            Some(x) => {
+                                                job = x;
+                                                println!("Job [{}] ({}) terminated by signal {}",job.jid,pid,signal);
+                                            },
+                                            None => (),
+                                        } 
+                                    };
+
+                                    unsafe { 
+                                        match JOBS.delete_job(pid.as_raw()) {
+                                            Ok(_) => (),
+                                            Err(_) => (),
+                                        } 
+                                    };
+                                },
+                                wait::WaitStatus::Stopped(pid,signal) => {
+                                    let mut job;
+                                    unsafe { job = JOBS.get_job_pid(pid.as_raw()).unwrap(); };
+                                    
+                                    job.state = ProccessState::ST;
+                                     
+                                    
+                                    println!("Job [{}] ({}) stopped by signal {}",job.jid,pid,signal);
+                                }
+                                _ => (),
+                            }
+                        }
+
+                    }
+                }
+                        
+                    
+                
+/*
                 for job in unsafe { JOBS.iter_mut()} {
                     let mut cmds = job.pipeline.lock().unwrap(); 
                     let mut exited = false;
@@ -269,6 +321,16 @@ fn main() {
                         if signaled {
                             println!("Job [{}] ({}) terminated by signal {}",job.jid,job.pgid,signal);
                         }
+
+                        //let job = unsafe { JOBS.get_job_pid(pid).unwrap() };
+
+                        /*for child in job.pipeline.lock().unwrap().iter_mut() {
+                            match child.try_wait() {
+                                Ok(_) => (),
+                                Err(e) => eprintln!("{}",e),
+                            }
+                        }*/
+
                         unsafe { 
                             match JOBS.delete_job(pid) {
                                 Err(e) => eprintln!("{}",e),
@@ -281,7 +343,7 @@ fn main() {
                         job.state = ProccessState::ST;
 
                     }
-                }
+                }*/
 
 
             }
@@ -328,10 +390,6 @@ fn main() {
         eval(buffer);
     }
 }
-
-
-
-
 
 
 fn eval(cmdline: String) {
@@ -399,12 +457,14 @@ fn eval(cmdline: String) {
             
             println!("pid child = {}", processes[i].id());
         }
+        
+
         if i == 0 {
             group_id = processes[i].id().try_into().unwrap();
         }
     }
     
-    let pid =  group_id.try_into().unwrap();
+    let pid = group_id.try_into().unwrap();
     if bg == 0 {
         if unsafe { VERBOSE == 1 } {
             println!("spawning in forground");
@@ -660,7 +720,7 @@ fn waitfg(pid: i32) {
        
         match job {
             Some(x) => match x.state {
-                ProccessState::FG =>  thread::sleep(time::Duration::from_secs(1)),
+                ProccessState::FG =>  continue, //thread::sleep(time::Duration::from_secs_f64(0.1)),
                 _ => break
             }
             None => break,
