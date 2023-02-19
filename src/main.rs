@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 const PROMPT: &str = "tsh> ";
 static mut VERBOSE:i32 = 0;
 static mut JOBS: Jobs = Jobs::new();
+static mut EXITSTATUS: Option<i32> = None; 
 
 
 
@@ -159,13 +160,16 @@ fn setup_signal_handlers() {
                         Ok(x) => {
                             match x {
                                 wait::WaitStatus::StillAlive => break,
-                                wait::WaitStatus::Exited(pid,_status) => {
+                                wait::WaitStatus::Exited(pid,status) => {
                                     unsafe { 
+                                        EXITSTATUS = Some(status);
                                         match JOBS.delete_job(pid.as_raw()) {
                                             Ok(_) => (),
                                             Err(_) => (),
                                         } 
                                     };
+                                    //this makes sure that waitfg can exit no matter what
+                                    signal::kill(Pid::from_raw(process::id().try_into().unwrap()),Signal::SIGINT).unwrap();
 
                                 }
                                 wait::WaitStatus::Signaled(pid, signal, _core_dump) => {
@@ -181,6 +185,7 @@ fn setup_signal_handlers() {
                                     };
 
                                     unsafe { 
+                                        EXITSTATUS = None;
                                         match JOBS.delete_job(pid.as_raw()) {
                                             Ok(_) => (),
                                             Err(_) => (),
@@ -239,7 +244,7 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     if unsafe { VERBOSE == 1 } {
         println!("Eval");
     }
-    let argv: Vec<String>;
+    let mut argv: Vec<String>;
     let bg: bool;
     let pair = parseline(&cmdline);
     bg = pair.0;
@@ -252,6 +257,7 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     if builtin_cmd(&argv,aliases,variables) == 1 {
         return;
     }
+
 
     let set = parseargs(&argv,&aliases,variables);
 
@@ -266,7 +272,7 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
 
 }
 
-fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) {
+fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) -> Option<i32> {
 
     if unsafe { VERBOSE == 1 } {
         println!("cmds {:?}",cmds);
@@ -311,7 +317,7 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
             Ok(x) => processes.push(x),
             Err(_) => {
                 eprintln!("{}: Command not found", cmds[i]);
-                return;
+                return None;
             },
         }
         if unsafe { VERBOSE == 1 } {
@@ -336,7 +342,8 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
         unsafe {
             JOBS.addjob(&pids, pids[0], ProccessState::FG, cmdline);
         } 
-        waitfg(pids[0]);
+        return waitfg(*pids.last().unwrap());
+
     }
     else if bg {
         if unsafe { VERBOSE == 1 } {
@@ -346,8 +353,11 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
         unsafe {
             JOBS.addjob(&pids, pids[0], ProccessState::BG, cmdline);
         } 
-
+        return None;
     }
+
+    return None;
+
 
 }
 
@@ -362,8 +372,8 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
         array.pop();
     }*/ 
     //array.push(' ');
-
-    if cmdline.rfind("&") != None {
+    let result = cmdline.rfind("&");
+    if result != None && cmdline.get(result.unwrap()-2..result.unwrap()-1) != Some("&"){ 
         bg = true;
     }
     else {
@@ -388,7 +398,12 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
                    },
             "|" => {
                         //println!("Space");
-                        argv.push(array.drain(..1).collect());
+                        match array.get(..2) {
+                            Some("||") => argv.push(array.drain(..2).collect()),
+                            _ => {
+                                argv.push(array.drain(..1).collect());
+                            },
+                        }
                    },
             "<" => {
                         //println!("Space");
@@ -404,7 +419,12 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
                    },
             "&" => {
                         //println!("Space");
-                        array.drain(..1);
+                        match array.get(..2) {
+                            Some("&&") => argv.push(array.drain(..2).collect()),
+                            _ => {
+                                array.drain(..1);
+                            },
+                        }
                    },
             "\n" => {
                         //println!("Space");
@@ -590,6 +610,7 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
     return (cmds,args,env,stdin_redir,stdout_redir);
 }
 
+
 pub fn do_bgfg(argv: &Vec<String>) {
     if argv.len() == 1 {
         println!("{} command requires PID or %jobid argument",argv[0]);
@@ -686,8 +707,7 @@ pub fn do_bgfg(argv: &Vec<String>) {
     }
 }
 
-fn waitfg(pid: i32) {
-    let mut counter = 0;
+fn waitfg(pid: i32) -> Option<i32> {
     loop {
         let job = unsafe {JOBS.get_job_pid(pid)};
        
@@ -697,72 +717,69 @@ fn waitfg(pid: i32) {
                     if unsafe { VERBOSE == 1} {
                         println!("{}", x);
                     }
-                    if counter == 0 {
-                        pause();
-                    }
+                    pause();
+                    
                 }, 
                 _ => break
             }
             None => break,
         }
-        counter += 1;
     }
 
     if unsafe { VERBOSE == 1} {
         println!("Broke out");
     }
+
+    return unsafe { EXITSTATUS };
 }
 
 
 fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> i32 {
     if argv.len() == 0 {
         return 1;
-    }
-    else if argv[0].as_str() == " " {
-        return 1;
-    }
-    else if argv[0].as_str() == "" {
-        return 1;
-    }
-    else if argv[0].as_str() == "quit" {
-        process::exit(0);
-    }
-    else if argv[0].as_str() == "exit" {
-        process::exit(0);
-    }
-    else if argv[0].as_str() == "jobs" {
-        unsafe {print!("{}",JOBS);}
-        io::stdout().flush().unwrap();
- 
-        return 1;
-    }
-    else if argv[0].as_str() == "fg" {
-        do_bgfg(&argv);
-        return 1;
-    }
-    else if argv[0].as_str() == "bg" {
-        do_bgfg(&argv);
-        return 1;
-    }
-    else if argv[0].as_str() == "cd" {
-        builtin::change_dir(argv); 
-        return 1;
-    }
-    else if argv[0].as_str() == "alias" {
-        builtin::alias(argv, aliases);
-        return 1;
-    }
-    else if argv[0].as_str() == "export" && argv.len() == 5 {
-        builtin::export(argv);
-        return 1;
-    }
-    else if argv[0].as_str() == "vars" {
-        builtin::print_vars(variables);
-        return 1;
-    }
-    else if argv.len() == 3 && argv[1].as_str() == "=" {
-        builtin::variable(argv,variables);
-        return 1;
+    } 
+    match argv[0].as_str() {
+        " " => return 1,
+        "" => return 1,
+        "quit" => process::exit(0),
+        "exit" => process::exit(0),
+        "jobs" => {
+            unsafe { print!("{}",JOBS);}
+            io::stdout().flush().unwrap();
+            return 1;
+        },
+        "fg" => {
+            do_bgfg(&argv);
+            return 1;
+        },
+        "bg" => {
+            do_bgfg(&argv);
+            return 1;
+        },
+        "cd" => {
+            builtin::change_dir(argv);
+            return 1;
+        },
+        "alias" => {
+            builtin::alias(argv, aliases);
+            return 1;
+        }
+        "export" => {
+            if argv.len() == 5 {
+                builtin::export(argv);
+            }
+            return 1;
+        },
+        "vars" => {
+            builtin::print_vars(variables);
+            return 1;
+        },
+        _ => {
+            if argv.len() == 3 && argv[1].as_str() == "=" {
+                builtin::variable(argv,variables);
+                return 1;
+            }
+        }    
     }
     
     return 0;
