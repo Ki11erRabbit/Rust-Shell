@@ -72,7 +72,7 @@ pub fn alias(argv: &Vec<String>, aliases: &mut BTreeMap<String,(String,Vec<Strin
 
 pub fn export(argv: &Vec<String>) {
     if argv.len() < 4 {
-        eprintln!("Not enough argument for alias.");
+        eprintln!("Not enough argument for exporting.");
         return;
     }
 
@@ -83,7 +83,33 @@ pub fn export(argv: &Vec<String>) {
 
     let args: String = argv.clone().drain(3..).collect::<Vec<String>>().join(" ");
 
-    env::set_var(key,args);
+    env::set_var(key,args);    
+}
+
+pub fn variable(argv: &Vec<String>, variables: &mut BTreeMap<String,String>) {
+    let key = &argv[0];
+    if argv[1].as_str() != "=" {
+        eprintln!("Equal sign (=) needed for assigning variable.")
+    }
     
+    let args;
+    if argv[2].contains("'") {
+        args = argv[2].clone().drain(1..argv[2].len()-1).collect();
+    }
+    else {
+        args = argv[2].as_str().to_string();
+    }
+    
+    variables.insert(key.to_string(),args);
+}
+
+
+pub fn print_vars(variables: &mut BTreeMap<String,String>) {
+    
+        for (key, value) in variables.iter() {
+           print!("{} = {} ",key,value); 
+           println!("");
+        }
+        return;
 
 }

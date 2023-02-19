@@ -28,6 +28,7 @@ static mut JOBS: Jobs = Jobs::new();
 
 fn main() {
     let mut aliases: BTreeMap<String,(String,Vec<String>)> = BTreeMap::new();
+    let mut variables: BTreeMap<String,String> = BTreeMap::new();
     let args: Vec<String> = env::args().collect();
     let mut emit_prompt = true;
     let mut path_in_prompt = false;
@@ -60,7 +61,7 @@ fn main() {
     setup_signal_handlers();
 
     
-    match parse_rshrc(&mut aliases) {
+    match parse_rshrc(&mut aliases,&mut variables) {
         Err(e) => eprintln!("{}",e),
         Ok(_) => (),
     }
@@ -84,11 +85,11 @@ fn main() {
         io::stdin().read_line(&mut buffer)
             .expect("Failed to read line");
 
-        eval(&buffer,&mut aliases);
+        eval(&buffer,&mut aliases,&mut variables);
     }
 }
 
-fn parse_rshrc(aliases: &mut BTreeMap<String, (String,Vec<String>)>) -> std::io::Result<()> {
+fn parse_rshrc(aliases: &mut BTreeMap<String, (String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> std::io::Result<()> {
     let key = "HOME";
     match env::var(key) {
         Err(_) => {
@@ -103,7 +104,7 @@ fn parse_rshrc(aliases: &mut BTreeMap<String, (String,Vec<String>)>) -> std::io:
             let lines: Vec<&str> = contents.split('\n').collect();
 
             for line in lines.iter() {
-                eval(line,aliases);
+                eval(line,aliases,variables);
             }
 
 
@@ -234,7 +235,7 @@ fn setup_signal_handlers() {
 }
 
 
-fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
+fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) {
     if unsafe { VERBOSE == 1 } {
         println!("Eval");
     }
@@ -248,11 +249,11 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>) {
         println!("{:?}",argv);
     }
 
-    if builtin_cmd(&argv,aliases) == 1 {
+    if builtin_cmd(&argv,aliases,variables) == 1 {
         return;
     }
 
-    let set = parseargs(&argv,&aliases);
+    let set = parseargs(&argv,&aliases,variables);
 
     let cmds = set.0;
     let args = set.1;
@@ -409,7 +410,7 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
     return (bg,argv);
 }
 
-fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
+fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
     if unsafe { VERBOSE == 1 } {
         println!("parseargs");
     }
@@ -474,7 +475,25 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                                                 cmd = val;
                                             }
                                         }
-                                        Err(_) => cmd = argv[i].as_str().to_string(),
+                                        Err(_) => {
+                                            match variables.get(&argv[i].clone().drain(1..).collect::<String>()) {
+                                                Some(val) => {
+                                                    if val.contains(" ") {
+                                                        let mut var: Vec<&str> = val.split(" ").collect();
+                                                        cmd = var[0].to_string();
+                                                        var.remove(0);
+                                                        for arg in var.iter() {
+                                                            args[curr_cmd].push(arg.to_string());
+                                                        }
+                                                    }
+                                                    else {
+                                                        cmd = val.to_string();
+                                                    }
+                                                },
+                                                None => cmd = argv[i].as_str().to_string(),
+                                            }
+
+                                        },//cmd = argv[i].as_str().to_string(),
                                     }
                                 }
                                 else {
@@ -500,7 +519,22 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                                         args[curr_cmd].push(val);
                                     }
                                 }
-                                Err(_) => args[curr_cmd].push(argv[i].as_str().to_string()),
+                                Err(_) => {
+                                    match variables.get(&argv[i].clone().drain(1..).collect::<String>()) {
+                                        Some(val) => {
+                                            if val.contains(" ") {
+                                                let var: Vec<&str> = val.split(" ").collect();
+                                                for arg in var.iter() {
+                                                    args[curr_cmd].push(arg.to_string());
+                                                }
+                                            }
+                                            else {
+                                                args[curr_cmd].push(val.to_string());
+                                            }
+                                        },
+                                        None => args[curr_cmd].push(argv[i].as_str().to_string()),
+                                    }
+                                },//args[curr_cmd].push(argv[i].as_str().to_string()),
                             }
 
                         }
@@ -641,7 +675,7 @@ fn waitfg(pid: i32) {
 }
 
 
-fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<String>)>) -> i32 {
+fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> i32 {
     if argv.len() == 0 {
         return 1;
     }
@@ -675,6 +709,14 @@ fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<Stri
     }
     else if argv[0].as_str() == "export" {
         builtin::export(argv);
+        return 1;
+    }
+    else if argv[0].as_str() == "vars" {
+        builtin::print_vars(variables);
+        return 1;
+    }
+    else if argv.len() == 3 && argv[1].as_str() == "=" {
+        builtin::variable(argv,variables);
         return 1;
     }
     
