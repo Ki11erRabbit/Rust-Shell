@@ -177,7 +177,7 @@ fn setup_signal_handlers() {
                                         } 
                                     };
                                     //this makes sure that waitfg can exit no matter what
-                                    signal::kill(Pid::from_raw(process::id().try_into().unwrap()),Signal::SIGINT).unwrap();
+                                    signal::kill(Pid::from_raw(process::id().try_into().unwrap()),Signal::SIGCHLD).unwrap();
 
                                 }
                                 wait::WaitStatus::Signaled(pid, signal, _core_dump) => {
@@ -276,6 +276,59 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     let stdout_redir = set.4;
 
     create_subproccesses(cmdline,argv,cmds, args, env,stdin_redir, stdout_redir,bg,append);
+}
+
+fn waitpid(pid: Pid, flags: Option<wait::WaitPidFlag>) {
+
+    match wait::waitpid(pid, flags) {
+        Err(_) => return,
+        Ok(x) => {
+            match x {
+                wait::WaitStatus::StillAlive => return,
+                wait::WaitStatus::Exited(pid,status) => {
+                    unsafe { 
+                        EXITSTATUS = Some(status);
+                        match JOBS.delete_job(pid.as_raw()) {
+                            Ok(_) => (),
+                            Err(_) => (),
+                        } 
+                    };
+
+                }
+                wait::WaitStatus::Signaled(pid, signal, _core_dump) => {
+                    let job;
+                    unsafe { 
+                        match JOBS.get_job_pid(pid.as_raw()) {
+                            Some(x) => {
+                                job = x;
+                                println!("Job [{}] ({}) terminated by signal {}",job.jid,pid,signal);
+                            },
+                            None => (),
+                        } 
+                    };
+
+                    unsafe { 
+                        EXITSTATUS = None;
+                        match JOBS.delete_job(pid.as_raw()) {
+                            Ok(_) => (),
+                            Err(_) => (),
+                        } 
+                    };
+                },
+                wait::WaitStatus::Stopped(pid,signal) => {
+                    let mut job;
+                    unsafe { job = JOBS.get_job_pid(pid.as_raw()).unwrap(); };
+                    
+                    job.state = ProccessState::ST;
+                     
+                    
+                    println!("Job [{}] ({}) stopped by signal {}",job.jid,pid,signal);
+                }
+                _ => (),
+            }
+        }
+
+    }
 
 
 }
@@ -290,12 +343,20 @@ fn wait_conditional(pid: i32) {
                 ProccessState::FG => {
                     if unsafe { VERBOSE == 1} {
                         println!("{}", x);
+                        println!("Pausing conditional")
                     }
-                    pause();
-                    
+                    //let flags: wait::WaitPidFlag = wait::WaitPidFlag::WNOHANG | wait::WaitPidFlag::WUNTRACED;
+                    //pause(); 
+                    //waitpid(Pid::from_raw(-pid),Some(flags))
                 }, 
                 ProccessState::BG => {
-                    pause();
+                    if unsafe { VERBOSE == 1} {
+                        println!("{}", x);
+                        println!("Pausing conditional")
+                    }
+                    //let flags: wait::WaitPidFlag = wait::WaitPidFlag::WNOHANG | wait::WaitPidFlag::WUNTRACED;
+                    //pause(); 
+                    //waitpid(Pid::from_raw(-pid),Some(flags))
                 },
                 _ => break
             }
@@ -330,42 +391,54 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
             if unsafe { VERBOSE == 1} {
                 println!("trying conditional exec");
             }
+            let state;
             if !bg {
-                unsafe {
-                    JOBS.addjob(&pids, pids[0], ProccessState::FG, cmdline);
-                    wait_conditional(pids[0]);
-
-                    if EXITSTATUS == Some(0) {
-                        pids.push(0);
-                        processes.push(None);
-                        group_id = 0;
-                        continue;
-                    }
-                    else {
-                        break
-                    }
-
-                }
+                state = ProccessState::FG;
             }
             else {
-                unsafe {
-                    JOBS.addjob(&pids, pids[0], ProccessState::BG, cmdline);
-                    wait_conditional(pids[0]);
-
-                    if EXITSTATUS == Some(0) {
-                        pids.push(0);
-                        processes.push(None);
-                        group_id = 0;
-                        continue;
-                    }
-                    else {
-                        break
-                    }
-
-                }
+                state = ProccessState::BG
             }
+            
+            unsafe {
+                JOBS.addjob(&pids, pids[0], state, cmdline);
+                wait_conditional(pids[0]);
 
+                if EXITSTATUS == Some(0) {
+                    pids.push(0);
+                    processes.push(None);
+                    group_id = 0;
+                    continue;
+                }
+                else {
+                    break
+                } 
+            }
+        }
+        else if cmds[i] == "||" {
+            let state;
+            if !bg {
+                state = ProccessState::FG;
+            }
+            else {
+                state = ProccessState::BG
+            }
+            
+            unsafe {
+                JOBS.addjob(&pids, pids[0], state, cmdline);
+                wait_conditional(pids[0]);
 
+                if EXITSTATUS != Some(0) {
+                    pids.push(0);
+                    processes.push(None);
+                    group_id = 0;
+                    continue;
+                }
+                else {
+                    break
+                }
+
+            }
+            
         }
 
         let mut command: &mut Command = &mut Command::new(cmds[i].as_str());
@@ -399,8 +472,14 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
             },
             Redirection::File(pos) => {
                 println!("{}",pos);
-                let file = File::open(argv[pos].as_str()).expect("Bad file path");
-                command = command.stdin(file); 
+                match File::open(argv[pos].as_str()) {
+                    Ok(file) => command = command.stdin(file),
+                    Err(_) => {
+                        eprintln!("Bad file path");
+                        unsafe { EXITSTATUS = Some(1) };
+                        continue;
+                    }
+                }
             },
             _ => (),
         }
@@ -613,6 +692,18 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                     
                 },
             "&&" => {
+                    stdout_redir[curr_cmd] = Redirection::Normal;
+                    stdin_redir.push(Redirection::Normal);
+                    stdout_redir.push(Redirection::Normal);
+                    stdin_redir.push(Redirection::Normal);
+                    stdout_redir.push(Redirection::Normal);
+                    cmds.push("&&".to_string());
+                    args.push(Vec::new());
+                    cmds.push("".to_string());
+                    args.push(Vec::new());
+                    curr_cmd += 2;
+                },
+            "||" => {
                     stdout_redir[curr_cmd] = Redirection::Normal;
                     stdin_redir.push(Redirection::Normal);
                     stdout_redir.push(Redirection::Normal);
@@ -844,22 +935,31 @@ pub fn do_bgfg(argv: &Vec<String>) {
 }
 
 fn waitfg(pid: i32) -> Option<i32> {
+    let mut counter = 0;
     loop {
         let job = unsafe {JOBS.get_job_pid(pid)};
        
         match job {
             Some(x) => match x.state {
                 ProccessState::FG => {
-                    if unsafe { VERBOSE == 1} {
-                        println!("{}", x);
+                    if counter == 1 {
+                        if unsafe { VERBOSE == 1} {
+                            println!("{}", x);
+                            println!("Pausing waitfg")
+                        }
+                        //pause(); 
+
+                        //let flags: wait::WaitPidFlag = wait::WaitPidFlag::WNOHANG | wait::WaitPidFlag::WUNTRACED;
+                        //pause(); 
+                        //waitpid(Pid::from_raw(-pid),Some(flags))
+
                     }
-                    pause();
-                    
                 }, 
                 _ => break
             }
             None => break,
         }
+        counter += 1
     }
 
     if unsafe { VERBOSE == 1} {
