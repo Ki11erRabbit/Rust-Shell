@@ -20,7 +20,7 @@ impl fmt::Display for ProccessState {
 }
 
 pub struct Job {
-    pub pid: i32,
+    pub pids: Vec<i32>,
     pub pgid: i32,
     pub jid: u32,
     pub state: ProccessState,
@@ -29,14 +29,14 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new(pid: i32, pgid: i32, jid: u32, state: ProccessState, cmdline: &str) -> Self {
-        Self {pid: pid, pgid: pgid, jid: jid, state: state, cmdline: cmdline.to_string()}
+    pub fn new(pids: &Vec<i32>, pgid: i32, jid: u32, state: ProccessState, cmdline: &str) -> Self {
+        Self {pids: pids.to_vec(), pgid: pgid, jid: jid, state: state, cmdline: cmdline.to_string()}
     }
 }
 
 impl fmt::Display for Job {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let result = write!(f,"[{}] ({}) ",self.jid,self.pid);
+        let result = write!(f,"[{}] ({}) ",self.jid,self.pgid);
         if result == Err(std::fmt::Error) {
             return result;
         }
@@ -63,8 +63,8 @@ impl Jobs {
         Self {jobs: Vec::new(),next_jid: 1}
     }
 
-    pub fn addjob(&mut self, pid: i32, pgid: i32, state: ProccessState, cmdline: &str) {
-       self.jobs.push(Job::new(pid,pgid,self.next_jid,state,cmdline)); 
+    pub fn addjob(&mut self, pids: &Vec<i32>, pgid: i32, state: ProccessState, cmdline: &str) {
+       self.jobs.push(Job::new(pids,pgid,self.next_jid,state,cmdline)); 
        self.next_jid += 1;
     }
 
@@ -74,7 +74,7 @@ impl Jobs {
         }
 
         for i in 0..self.jobs.len() {
-            if self.jobs[i].pid == pid {
+            if *self.jobs[i].pids.last().unwrap() == pid {
                 self.jobs.remove(i);
                 self.set_next_jid();
                 return Ok("Successfully removed job");
@@ -95,7 +95,7 @@ impl Jobs {
 
     pub fn get_job_pid(&mut self, pid: i32) -> Option<&mut Job> {
         for job in self.jobs.iter_mut() {
-            if job.pid == pid {
+            if job.pgid == pid {
 
                 return Some(job);
             }

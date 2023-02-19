@@ -130,9 +130,9 @@ fn setup_signal_handlers() {
                     match job.state {
                         ProccessState::FG => {
                                 
-                                signal::kill(Pid::from_raw(-job.pid),Signal::SIGINT).unwrap();
+                                signal::kill(Pid::from_raw(-job.pgid),Signal::SIGINT).unwrap();
                                 unsafe {
-                                    match JOBS.delete_job(job.pid) {
+                                    match JOBS.delete_job(*job.pids.last().unwrap()) {
                                         Err(e) => eprintln!("{}",e),
                                         Ok(_) => (),
                                     }
@@ -219,7 +219,7 @@ fn setup_signal_handlers() {
                     match job.state {
                         ProccessState::FG => {
 
-                                signal::kill(Pid::from_raw(-job.pid),Signal::SIGTSTP).unwrap();        
+                                signal::kill(Pid::from_raw(-job.pgid),Signal::SIGTSTP).unwrap();        
                         }
                         _ => {
                                 continue;
@@ -257,32 +257,40 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
 
     let cmds = set.0;
     let args = set.1;
-    let stdin_redir = set.2;
-    let stdout_redir = set.3;
+    let env = set.2;
+    let stdin_redir = set.3;
+    let stdout_redir = set.4;
 
-    create_subproccesses(cmdline,argv,cmds, args, stdin_redir, stdout_redir,bg);
+    create_subproccesses(cmdline,argv,cmds, args, env,stdin_redir, stdout_redir,bg);
 
 
 }
 
-fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) {
+fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) {
 
     if unsafe { VERBOSE == 1 } {
-        println!("{:?}",cmds);
-        println!("{:?}",args);
-        println!("{:?}",stdin_redir);
-        println!("{:?}",stdout_redir);
+        println!("cmds {:?}",cmds);
+        println!("args {:?}",args);
+        println!("env {:?}",env);
+        println!("stdin {:?}",stdin_redir);
+        println!("stdout {:?}",stdout_redir);
         
         println!("\npid = {}", process::id());
     }
     
     let mut processes: Vec<Child> = Vec::new(); 
+    let mut pids: Vec<i32> = Vec::new(); 
     let mut group_id = 0;
     for i in 0..cmds.len() {
         let mut command: &mut Command = &mut Command::new(cmds[i].as_str());
         command = command.process_group(group_id);
         //println!("{}",cmds[i].len());
         command = command.args(args[i].as_slice());
+        
+        for (key, val) in env.iter() {
+            command = command.env(key,val);
+        }
+
         if stdout_redir[i] == usize::MAX {
             command = command.stdout(Stdio::piped());
         }
@@ -314,18 +322,21 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
 
         if i == 0 {
             group_id = processes[i].id().try_into().unwrap();
+            pids.push(group_id);
+        }
+        else {
+            pids.push(processes[i].id().try_into().unwrap());
         }
     }
     
-    let pid = group_id.try_into().unwrap();
     if !bg {
         if unsafe { VERBOSE == 1 } {
             println!("spawning in forground");
         }
         unsafe {
-            JOBS.addjob(pid, pid, ProccessState::FG, cmdline);
+            JOBS.addjob(&pids, pids[0], ProccessState::FG, cmdline);
         } 
-        waitfg(pid);
+        waitfg(pids[0]);
     }
     else if bg {
         if unsafe { VERBOSE == 1 } {
@@ -333,7 +344,7 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
         }
 
         unsafe {
-            JOBS.addjob(pid, pid, ProccessState::BG, cmdline);
+            JOBS.addjob(&pids, pids[0], ProccessState::BG, cmdline);
         } 
 
     }
@@ -410,12 +421,13 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
     return (bg,argv);
 }
 
-fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> (Vec<String>,Vec<Vec<String>>,Vec<usize>,Vec<usize>) {
+fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> (Vec<String>,Vec<Vec<String>>,Vec<(String,String)>,Vec<usize>,Vec<usize>) {
     if unsafe { VERBOSE == 1 } {
         println!("parseargs");
     }
     let mut cmds: Vec<String> = Vec::new();
     let mut args: Vec<Vec<String>> = Vec::new();
+    let mut env: Vec<(String,String)> = Vec::new();
     let mut stdin_redir: Vec<usize> = Vec::new();
     let mut stdout_redir: Vec<usize> = Vec::new();
 
@@ -446,11 +458,24 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                     stdout_redir[curr_cmd] = i + 1;
                     skip = true;
                 },
+            "=" => {
+                    skip = true;
+                },
             _ => {
                     if skip {
                         skip = false;
                         continue;
                     }
+
+                    if i + 2 < argv.len() && argv[i+1].as_str() == "=" {
+                        env.push((argv[i].clone(),argv[i+2].clone()));
+                        skip = true;
+                        if unsafe { VERBOSE == 1} {
+                            println!("env: {:?}",env);
+                        }
+                        continue;
+                    }
+
                     if cmds[curr_cmd].as_str() == "" {
                         let cmd;
                         match aliases.get(&argv[i]) {
@@ -548,7 +573,7 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
     }
     
 
-    return (cmds,args,stdin_redir,stdout_redir);
+    return (cmds,args,env,stdin_redir,stdout_redir);
 }
 
 pub fn do_bgfg(argv: &Vec<String>) {
@@ -658,7 +683,7 @@ fn waitfg(pid: i32) {
                     if unsafe { VERBOSE == 1} {
                         println!("{}", x);
                     }
-                    if counter == 1 {
+                    if counter == 0 {
                         pause();
                     }
                 }, 
