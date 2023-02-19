@@ -17,6 +17,13 @@ use nix::sys::wait;
 use std::collections::BTreeMap;
 
 
+#[derive(Debug,PartialEq)]
+enum Redirection <T>{
+    Normal,
+    Pipe,
+    File(T),
+    Redir(T)
+}
 
 
 
@@ -249,6 +256,7 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     let pair = parseline(&cmdline);
     bg = pair.0;
     argv = pair.1;
+    let conditional = pair.2;
     
     if unsafe { VERBOSE == 1 } {
         println!("{:?}",argv);
@@ -258,7 +266,6 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
         return;
     }
 
-
     let set = parseargs(&argv,&aliases,variables);
 
     let cmds = set.0;
@@ -267,12 +274,40 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     let stdin_redir = set.3;
     let stdout_redir = set.4;
 
-    create_subproccesses(cmdline,argv,cmds, args, env,stdin_redir, stdout_redir,bg);
+    create_subproccesses(cmdline,argv,cmds, args, env,stdin_redir, stdout_redir,bg,conditional);
 
 
 }
 
-fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<usize>, stdout_redir: Vec<usize>,bg: bool) -> Option<i32> {
+fn wait_conditional(pid: i32) {
+    
+    loop {
+        let job = unsafe {JOBS.get_job_pid(pid)};
+       
+        match job {
+            Some(x) => match x.state {
+                ProccessState::FG => {
+                    if unsafe { VERBOSE == 1} {
+                        println!("{}", x);
+                    }
+                    pause();
+                    
+                }, 
+                ProccessState::BG => {
+                    pause();
+                },
+                _ => break
+            }
+            None => break,
+        }
+    }
+
+    if unsafe { VERBOSE == 1} {
+        println!("Broke out");
+    }
+}
+
+fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<Redirection<usize>>, stdout_redir: Vec<Redirection<usize>>,bg: bool, conditional: bool) -> Option<i32> {
 
     if unsafe { VERBOSE == 1 } {
         println!("cmds {:?}",cmds);
@@ -280,14 +315,58 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
         println!("env {:?}",env);
         println!("stdin {:?}",stdin_redir);
         println!("stdout {:?}",stdout_redir);
+        println!("bg {:?}",bg);
         
         println!("\npid = {}", process::id());
     }
     
-    let mut processes: Vec<Child> = Vec::new(); 
+    let mut processes: Vec<Option<Child>> = Vec::new(); 
     let mut pids: Vec<i32> = Vec::new(); 
     let mut group_id = 0;
     for i in 0..cmds.len() {
+        
+        if cmds[i] == "&&" {
+            if unsafe { VERBOSE == 1} {
+                println!("trying conditional exec");
+            }
+            if !bg {
+                unsafe {
+                    JOBS.addjob(&pids, pids[0], ProccessState::FG, cmdline);
+                    wait_conditional(pids[0]);
+
+                    if EXITSTATUS == Some(0) {
+                        pids.push(0);
+                        processes.push(None);
+                        group_id = 0;
+                        continue;
+                    }
+                    else {
+                        break
+                    }
+
+                }
+            }
+            else {
+                unsafe {
+                    JOBS.addjob(&pids, pids[0], ProccessState::BG, cmdline);
+                    wait_conditional(pids[0]);
+
+                    if EXITSTATUS == Some(0) {
+                        pids.push(0);
+                        processes.push(None);
+                        group_id = 0;
+                        continue;
+                    }
+                    else {
+                        break
+                    }
+
+                }
+            }
+
+
+        }
+
         let mut command: &mut Command = &mut Command::new(cmds[i].as_str());
         command = command.process_group(group_id);
         //println!("{}",cmds[i].len());
@@ -297,41 +376,60 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
             command = command.env(key,val);
         }
 
-        if stdout_redir[i] == usize::MAX {
-            command = command.stdout(Stdio::piped());
+
+        match stdout_redir[i] {
+            Redirection::Pipe => {
+                command = command.stdout(Stdio::piped());
+            },
+            Redirection::File(pos) => {
+                println!("{}",pos);
+                let file = File::create(argv[pos].as_str()).expect("Bad file path");
+                command = command.stdout(file);
+            },
+            _ => (),
         }
-        else if stdout_redir[i] != usize::MAX && stdout_redir[i] != usize::MAX -1{
-            let file = File::create(argv[stdout_redir[i]].as_str()).expect("Bad file path");
-            command = command.stdout(file);
+        match stdin_redir[i] {
+            Redirection::Pipe => {
+                command = command.stdin(processes[i-1].as_mut().unwrap().stdout.take().unwrap()); 
+            },
+            Redirection::File(pos) => {
+                println!("{}",pos);
+                let file = File::open(argv[pos].as_str()).expect("Bad file path");
+                command = command.stdin(file); 
+            },
+            _ => (),
         }
-        if stdin_redir[i] == usize::MAX {
-            command = command.stdin(processes[i-1].stdout.take().unwrap());
-        }
-        else if stdin_redir[i] != usize::MAX && stdin_redir[i] != usize::MAX -1{
-            let file = File::open(argv[stdin_redir[i]].as_str()).expect("Bad file path");
-            command = command.stdin(file);
-        } 
         
 
         match command.spawn() {
-            Ok(x) => processes.push(x),
+            Ok(x) => processes.push(Some(x)),
             Err(_) => {
                 eprintln!("{}: Command not found", cmds[i]);
                 return None;
             },
         }
         if unsafe { VERBOSE == 1 } {
-            
-            println!("pid child = {}", processes[i].id());
+            match &processes[i] {
+                Some(proc) => println!("pid child = {}", proc.id()),
+                None => (),
+            } 
         }
         
 
         if i == 0 {
-            group_id = processes[i].id().try_into().unwrap();
-            pids.push(group_id);
+            match &processes[i] {
+                Some(proc) => {
+                    group_id = proc.id().try_into().unwrap();
+                    pids.push(group_id);
+                },
+                None => pids.push(0),
+            }
         }
         else {
-            pids.push(processes[i].id().try_into().unwrap());
+            match &processes[i] {
+                Some(proc) => pids.push(proc.id().try_into().unwrap()),
+                None => pids.push(0),
+            }
         }
     }
     
@@ -342,7 +440,7 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
         unsafe {
             JOBS.addjob(&pids, pids[0], ProccessState::FG, cmdline);
         } 
-        return waitfg(*pids.last().unwrap());
+        return waitfg(pids[0]);
 
     }
     else if bg {
@@ -361,19 +459,23 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
 
 }
 
-fn parseline(cmdline: &str) -> (bool,Vec<String>) {
+fn parseline(cmdline: &str) -> (bool,Vec<String>, bool) {
     if unsafe { VERBOSE == 1 } {
         println!("Parseline");
     }
     let mut argv: Vec<String> = Vec::new();
     let bg: bool;
+    let mut conditional: bool = false;
     let mut array = cmdline.to_string(); 
     /*if array.contains("\n") {
         array.pop();
     }*/ 
     //array.push(' ');
     let result = cmdline.rfind("&");
-    if result != None && cmdline.get(result.unwrap()-2..result.unwrap()-1) != Some("&"){ 
+    if result != None && cmdline.get(result.unwrap()-1..=result.unwrap()) != Some("&&"){ 
+        if unsafe { VERBOSE == 1} {
+            println!("{:?}",cmdline.get(result.unwrap()-1..=result.unwrap()));
+        }
         bg = true;
     }
     else {
@@ -399,7 +501,10 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
             "|" => {
                         //println!("Space");
                         match array.get(..2) {
-                            Some("||") => argv.push(array.drain(..2).collect()),
+                            Some("||") => {
+                                conditional = true;
+                                argv.push(array.drain(..2).collect());
+                            },
                             _ => {
                                 argv.push(array.drain(..1).collect());
                             },
@@ -420,7 +525,10 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
             "&" => {
                         //println!("Space");
                         match array.get(..2) {
-                            Some("&&") => argv.push(array.drain(..2).collect()),
+                            Some("&&") => {
+                                conditional = true;
+                                argv.push(array.drain(..2).collect());
+                            },
                             _ => {
                                 array.drain(..1);
                             },
@@ -442,44 +550,44 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
     }
 
 
-    return (bg,argv);
+    return (bg,argv,conditional);
 }
 
-fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> (Vec<String>,Vec<Vec<String>>,Vec<(String,String)>,Vec<usize>,Vec<usize>) {
+fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> (Vec<String>,Vec<Vec<String>>,Vec<(String,String)>,Vec<Redirection<usize>>,Vec<Redirection<usize>>) {
     if unsafe { VERBOSE == 1 } {
         println!("parseargs");
     }
     let mut cmds: Vec<String> = Vec::new();
     let mut args: Vec<Vec<String>> = Vec::new();
     let mut env: Vec<(String,String)> = Vec::new();
-    let mut stdin_redir: Vec<usize> = Vec::new();
-    let mut stdout_redir: Vec<usize> = Vec::new();
+    let mut stdin_redir: Vec<Redirection<usize>> = Vec::new();
+    let mut stdout_redir: Vec<Redirection<usize>> = Vec::new();
 
     let mut curr_cmd = 0;
     cmds.push("".to_string());
     args.push(Vec::new());
-    stdin_redir.push(usize::MAX -1);
-    stdout_redir.push(usize::MAX -1);
+    stdin_redir.push(Redirection::Normal);
+    stdout_redir.push(Redirection::Normal);
 
     let mut skip = false;
     for i in 0..argv.len() {
         match argv[i].as_str() {
             "|" => {
-                    stdout_redir[curr_cmd] = usize::MAX;
-                    stdin_redir.push(usize::MAX);
-                    stdout_redir.push(usize::MAX-1);
+                    stdout_redir[curr_cmd] = Redirection::Pipe;
+                    stdin_redir.push(Redirection::Pipe);
+                    stdout_redir.push(Redirection::Normal);
                     cmds.push("".to_string());
                     args.push(Vec::new());
                     curr_cmd += 1;
                 },
             "<" => {
                     //stdin_redir[curr_cmd] = args[curr_cmd].len();
-                    stdin_redir[curr_cmd] = i + 1;
+                    stdin_redir[curr_cmd] = Redirection::File(i + 2);
                     skip = true;
                 },
             ">" => {
                     //stdout_redir[curr_cmd] = args[curr_cmd].len();
-                    stdout_redir[curr_cmd] = i + 1;
+                    stdout_redir[curr_cmd] = Redirection::File(i + 2);
                     skip = true;
                 },
             "=" => {
@@ -487,6 +595,18 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                 },
             " " => {
                     
+                },
+            "&&" => {
+                    stdout_redir[curr_cmd] = Redirection::Normal;
+                    stdin_redir.push(Redirection::Normal);
+                    stdout_redir.push(Redirection::Normal);
+                    stdin_redir.push(Redirection::Normal);
+                    stdout_redir.push(Redirection::Normal);
+                    cmds.push("&&".to_string());
+                    args.push(Vec::new());
+                    cmds.push("".to_string());
+                    args.push(Vec::new());
+                    curr_cmd += 2;
                 },
             _ => {
                     if skip {
