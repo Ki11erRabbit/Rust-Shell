@@ -6,6 +6,7 @@ use std::process::{self,Command, Stdio, Child};
 use std::env;
 use std::io::{self,Write};
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::os::unix::process::CommandExt;
 use signal_hook::{consts::*, iterator::Signals};
@@ -251,12 +252,12 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     if unsafe { VERBOSE == 1 } {
         println!("Eval");
     }
-    let mut argv: Vec<String>;
+    let argv: Vec<String>;
     let bg: bool;
     let pair = parseline(&cmdline);
     bg = pair.0;
     argv = pair.1;
-    let conditional = pair.2;
+    let append = pair.2;
     
     if unsafe { VERBOSE == 1 } {
         println!("{:?}",argv);
@@ -274,7 +275,7 @@ fn eval(cmdline: &str, aliases: &mut BTreeMap<String,(String,Vec<String>)>, vari
     let stdin_redir = set.3;
     let stdout_redir = set.4;
 
-    create_subproccesses(cmdline,argv,cmds, args, env,stdin_redir, stdout_redir,bg,conditional);
+    create_subproccesses(cmdline,argv,cmds, args, env,stdin_redir, stdout_redir,bg,append);
 
 
 }
@@ -307,7 +308,7 @@ fn wait_conditional(pid: i32) {
     }
 }
 
-fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<Redirection<usize>>, stdout_redir: Vec<Redirection<usize>>,bg: bool, conditional: bool) -> Option<i32> {
+fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: Vec<Vec<String>>, env: Vec<(String,String)>,stdin_redir: Vec<Redirection<usize>>, stdout_redir: Vec<Redirection<usize>>,bg: bool, append: bool) -> Option<i32> {
 
     if unsafe { VERBOSE == 1 } {
         println!("cmds {:?}",cmds);
@@ -382,8 +383,12 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
                 command = command.stdout(Stdio::piped());
             },
             Redirection::File(pos) => {
-                println!("{}",pos);
-                let file = File::create(argv[pos].as_str()).expect("Bad file path");
+                let file = OpenOptions::new()
+                    .write(true)
+                    .append(append)
+                    .open(argv[pos].as_str())
+                    .expect("Bad file path");
+                    //File::create(argv[pos].as_str()).expect("Bad file path");
                 command = command.stdout(file);
             },
             _ => (),
@@ -465,7 +470,7 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>, bool) {
     }
     let mut argv: Vec<String> = Vec::new();
     let bg: bool;
-    let mut conditional: bool = false;
+    let mut append: bool = false;
     let mut array = cmdline.to_string(); 
     /*if array.contains("\n") {
         array.pop();
@@ -502,7 +507,6 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>, bool) {
                         //println!("Space");
                         match array.get(..2) {
                             Some("||") => {
-                                conditional = true;
                                 argv.push(array.drain(..2).collect());
                             },
                             _ => {
@@ -516,7 +520,15 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>, bool) {
                    },
             ">" => {
                         //println!("Space");
-                        argv.push(array.drain(..1).collect());
+                        match array.get(..2) {
+                            Some(">>") => {
+                                append = true;
+                                argv.push(array.drain(..2).collect());
+                            },
+                            _ => {
+                                argv.push(array.drain(..1).collect());
+                            },
+                        }
                    },
             "=" => {
                         //println!("Space");
@@ -526,7 +538,6 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>, bool) {
                         //println!("Space");
                         match array.get(..2) {
                             Some("&&") => {
-                                conditional = true;
                                 argv.push(array.drain(..2).collect());
                             },
                             _ => {
@@ -550,7 +561,7 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>, bool) {
     }
 
 
-    return (bg,argv,conditional);
+    return (bg,argv,append);
 }
 
 fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>, variables: &mut BTreeMap<String, String>) -> (Vec<String>,Vec<Vec<String>>,Vec<(String,String)>,Vec<Redirection<usize>>,Vec<Redirection<usize>>) {
@@ -586,6 +597,11 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                     skip = true;
                 },
             ">" => {
+                    //stdout_redir[curr_cmd] = args[curr_cmd].len();
+                    stdout_redir[curr_cmd] = Redirection::File(i + 2);
+                    skip = true;
+                },
+            ">>" => {
                     //stdout_redir[curr_cmd] = args[curr_cmd].len();
                     stdout_redir[curr_cmd] = Redirection::File(i + 2);
                     skip = true;
