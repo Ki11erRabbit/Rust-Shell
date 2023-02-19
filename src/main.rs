@@ -358,10 +358,10 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
     let mut argv: Vec<String> = Vec::new();
     let bg: bool;
     let mut array = cmdline.to_string(); 
-    if array.contains("\n") {
+    /*if array.contains("\n") {
         array.pop();
-    } 
-    array.push(' ');
+    }*/ 
+    //array.push(' ');
 
     if cmdline.rfind("&") != None {
         bg = true;
@@ -384,7 +384,7 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
                    },
             " " => {
                         //println!("Space");
-                        array.drain(..1);
+                        argv.push(array.drain(..1).collect());
                    },
             "|" => {
                         //println!("Space");
@@ -406,9 +406,13 @@ fn parseline(cmdline: &str) -> (bool,Vec<String>) {
                         //println!("Space");
                         array.drain(..1);
                    },
+            "\n" => {
+                        //println!("Space");
+                        array.drain(..1);
+                   },
             _ => {
                         //println!("Default");
-                        argv.push(array.drain(0..array.find(|c: char| c == '>' || c == '|' || c == '<' || c == ' ' || c == '=').unwrap()).collect());
+                        argv.push(array.drain(0..array.find(|c: char| c == '>' || c == '|' || c == '<' || c == ' ' || c == '=' || c == '\n').unwrap()).collect());
 
                  } 
         }
@@ -461,6 +465,9 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
             "=" => {
                     skip = true;
                 },
+            " " => {
+                    
+                },
             _ => {
                     if skip {
                         skip = false;
@@ -468,7 +475,14 @@ fn parseargs(argv: &Vec<String>,aliases: & BTreeMap<String,(String,Vec<String>)>
                     }
 
                     if i + 2 < argv.len() && argv[i+1].as_str() == "=" {
-                        env.push((argv[i].clone(),argv[i+2].clone()));
+                        let val;
+                        if argv[i+2].contains("'") {
+                            val = argv[i+2].clone().drain(1..argv[i].len()-1).collect();
+                        }
+                        else {
+                            val = argv[i+2].clone();
+                        }
+                        env.push((argv[i].clone(),val));
                         skip = true;
                         if unsafe { VERBOSE == 1} {
                             println!("env: {:?}",env);
@@ -704,6 +718,12 @@ fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<Stri
     if argv.len() == 0 {
         return 1;
     }
+    else if argv[0].as_str() == " " {
+        return 1;
+    }
+    else if argv[0].as_str() == "" {
+        return 1;
+    }
     else if argv[0].as_str() == "quit" {
         process::exit(0);
     }
@@ -732,7 +752,7 @@ fn builtin_cmd(argv: &Vec<String>,aliases: &mut BTreeMap<String,(String,Vec<Stri
         builtin::alias(argv, aliases);
         return 1;
     }
-    else if argv[0].as_str() == "export" {
+    else if argv[0].as_str() == "export" && argv.len() == 5 {
         builtin::export(argv);
         return 1;
     }

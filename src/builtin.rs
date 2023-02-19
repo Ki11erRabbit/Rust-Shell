@@ -47,41 +47,55 @@ pub fn alias(argv: &Vec<String>, aliases: &mut BTreeMap<String,(String,Vec<Strin
         return;
     }
 
-    if argv.len() < 4 {
+    if argv.len() < 5 {
         eprintln!("Not enough arguments for alias.");
         return;
     }
     
-    let key = &argv[1];
+    let key = &argv[2];
 
-    if argv[2].as_str() != "=" {
+    if argv[3].as_str() != "=" {
         eprintln!("Equal sign (=) needed for alias.");
         return;
     }
-    let mut args: Vec<String> = argv.clone().drain(3..).collect();
-    let cmd = args[0].clone();
-    if args.len() > 1 {
-        args = args.drain(1..).collect();
+    let mut args: Vec<String> = Vec::new();
+    let cmd;
+    if argv[4].contains("'") {
+        let string = argv[4].clone().drain(1..argv[4].len()-1).collect::<String>();
+        let temp_args:Vec<&str> = string.split(" ").collect();
+
+        for arg in temp_args.iter() {
+            args.push(arg.to_string());
+        }
+        cmd = args.drain(..1).collect::<String>().clone();
+
+
     }
     else {
-        args = Vec::new();
+        cmd = argv[4].clone();
     }
 
-    aliases.insert(key.to_string(), (cmd.to_string(),args));
+    aliases.insert(key.to_string(), (cmd,args));
 }
 
 pub fn export(argv: &Vec<String>) {
-    if argv.len() < 4 {
+    if argv.len() < 5 {
         eprintln!("Not enough argument for exporting.");
         return;
     }
 
-    let key = &argv[1];
-    if argv[2].as_str() != "=" {
+    let key = &argv[2];
+    if argv[3].as_str() != "=" {
         eprintln!("Equal sign (=) needed for exporting")
     }
-
-    let args: String = argv.clone().drain(3..).collect::<Vec<String>>().join(" ");
+    
+    let args; //argv.clone().drain(3..).collect::<Vec<String>>().join(" ");
+    if argv[4].contains("'") {
+       args = argv[4].clone().drain(1..argv[4].len()-1).collect(); 
+    }
+    else {
+        args = argv[4].clone();
+    }
 
     env::set_var(key,args);    
 }
