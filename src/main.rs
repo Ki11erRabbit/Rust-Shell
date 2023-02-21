@@ -456,12 +456,19 @@ fn create_subproccesses(cmdline:&str,argv: Vec<String>,cmds: Vec<String>, args: 
                 command = command.stdout(Stdio::piped());
             },
             Redirection::File(pos) => {
-                let file = OpenOptions::new()
-                    .write(true)
-                    .append(append)
-                    .open(argv[pos].as_str())
-                    .expect("Bad file path");
-                    //File::create(argv[pos].as_str()).expect("Bad file path");
+                let file;
+                if append {
+
+                    file = OpenOptions::new()
+                        .write(true)
+                        .append(append)
+                        .open(argv[pos].as_str())
+                        .expect("Bad file path");
+
+                }
+                else {
+                    file = File::create(argv[pos].as_str()).expect("Bad file path");
+                }
                 command = command.stdout(file);
             },
             _ => (),
